@@ -1,4 +1,4 @@
-const { BrowserWindow } = require('electron');
+const { desktopCapturer, systemPreferences } = require('electron');
 const { createStreamingLLM } = require('../common/ai/factory');
 // Lazy require helper to avoid circular dependency issues
 const getWindowManager = () => require('../../window/windowManager');
@@ -20,7 +20,6 @@ const fs = require('node:fs');
 const os = require('os');
 const util = require('util');
 const execFile = util.promisify(require('child_process').execFile);
-const { desktopCapturer } = require('electron');
 const modelStateService = require('../common/services/modelStateService');
 
 // Try to load sharp, but don't fail if it's not available
@@ -37,6 +36,7 @@ let lastScreenshot = null;
 
 async function captureScreenshot(options = {}) {
     if (process.platform === 'darwin') {
+        if (systemPreferences.getMediaAccessStatus('screen') !== 'granted') return null;
         try {
             const tempPath = path.join(os.tmpdir(), `screenshot-${Date.now()}.jpg`);
 

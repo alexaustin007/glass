@@ -293,19 +293,7 @@ class HeaderTransitionManager {
             const permissions = await window.api.headerController.checkSystemPermissions();
             console.log('[HeaderController] Current permissions:', permissions);
             
-            if (!permissions.needsSetup) {
-                return { success: true };
-            }
-
-            let errorMessage = '';
-            if (!permissions.microphone && !permissions.screen) {
-                errorMessage = 'Microphone and screen recording access required';
-            }
-            
-            return { 
-                success: false, 
-                error: errorMessage
-            };
+            return { success: !permissions.needsSetup };
         } catch (error) {
             console.error('[HeaderController] Error checking permissions:', error);
             return { 

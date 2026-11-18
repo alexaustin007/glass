@@ -39,7 +39,6 @@ module.exports = {
     // Permissions
     ipcMain.handle('check-system-permissions', async () => await permissionService.checkSystemPermissions());
     ipcMain.handle('request-microphone-permission', async () => await permissionService.requestMicrophonePermission());
-    ipcMain.handle('open-system-preferences', async (event, section) => await permissionService.openSystemPreferences(section));
     ipcMain.handle('mark-keychain-completed', async () => await permissionService.markKeychainCompleted());
     ipcMain.handle('check-keychain-completed', async () => await permissionService.checkKeychainCompleted());
     ipcMain.handle('initialize-encryption-key', async () => {

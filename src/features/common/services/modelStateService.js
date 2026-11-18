@@ -103,7 +103,7 @@ class ModelStateService extends EventEmitter {
 
     async handleLocalAIStateChange(service, state) {
         console.log(`[ModelStateService] LocalAI state changed: ${service}`, state);
-        if (!state.installed || !state.running) {
+        if (!state.installed || (service === 'ollama' && !state.running)) {
             const types = service === 'ollama' ? ['llm'] : service === 'whisper' ? ['stt'] : [];
             await this._autoSelectAvailableModels(types);
         }

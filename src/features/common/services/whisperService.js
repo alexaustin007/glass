@@ -283,10 +283,7 @@ class WhisperService extends EventEmitter {
             this.modelsDir = path.join(whisperDir, 'models');
             this.tempDir = path.join(whisperDir, 'temp');
             
-            // Windows에서는 .exe 확장자 필요
-            const platform = this.getPlatform();
-            const whisperExecutable = platform === 'win32' ? 'whisper-whisper.exe' : 'whisper';
-            this.whisperPath = path.join(whisperDir, 'bin', whisperExecutable);
+            this.whisperPath = this.getLocalBinaryPath();
 
             await this.ensureDirectories();
             await this.ensureWhisperBinary();
@@ -630,11 +627,17 @@ class WhisperService extends EventEmitter {
 
     async isInstalled() {
         try {
-            const whisperPath = await this.checkCommand('whisper-cli') || await this.checkCommand('whisper');
-            return !!whisperPath;
+            if (await this.checkCommand('whisper-cli') || await this.checkCommand('whisper')) return true;
+            await fsPromises.access(this.getLocalBinaryPath(), fs.constants.X_OK);
+            return true;
         } catch (error) {
             return false;
         }
+    }
+
+    getLocalBinaryPath() {
+        const executable = this.getPlatform() === 'win32' ? 'whisper-whisper.exe' : 'whisper';
+        return path.join(os.homedir(), '.glass', 'whisper', 'bin', executable);
     }
 
     async installMacOS() {
