@@ -12,6 +12,7 @@ class ListenService {
         this.summaryService = new SummaryService();
         this.currentSessionId = null;
         this.isInitializingSession = false;
+        this.askAudioSession = null;
 
         this.setupServiceCallbacks();
         console.log('[ListenService] Service instance created.');
@@ -21,8 +22,10 @@ class ListenService {
         // STT service callbacks
         this.sttService.setCallbacks({
             onTranscriptionComplete: (speaker, text) => {
+                if (this.askAudioSession) return;
                 this.handleTranscriptionComplete(speaker, text);
             },
+            getCaptureWindowName: () => this.askAudioSession ? 'ask' : 'listen',
             onStatusUpdate: (status) => {
                 this.sendToRenderer('update-status', status);
             }
@@ -59,6 +62,9 @@ class ListenService {
         const header = windowPool.get('header');
 
         try {
+            if (this.askAudioSession) {
+                throw new Error('Stop the audio controls in Ask before starting Listen.');
+            }
             switch (listenButtonText) {
                 case 'Listen':
                     console.log('[ListenService] changeSession to "Listen"');
@@ -94,6 +100,42 @@ class ListenService {
             header.webContents.send('listen:changeSessionResult', { success: false });
             throw error; 
         }
+    }
+
+    beginAskAudio() {
+        if (this.askAudioSession?.closing) {
+            return this.askAudioSession.closing.then(() => this.beginAskAudio());
+        }
+        if (this.askAudioSession) return this.askAudioSession.ready;
+        if (this.currentSessionId || this.isInitializingSession || this.isSessionActive()) {
+            throw new Error('Stop the Listen session in the Glass toolbar first.');
+        }
+
+        const session = {};
+        this.askAudioSession = session;
+        session.ready = this.sttService.initializeSttSessions().catch(async error => {
+            if (!session.closing) {
+                try {
+                    await this.sttService.closeSessions();
+                } finally {
+                    if (!session.closing) this.askAudioSession = null;
+                }
+            }
+            throw error;
+        });
+        return session.ready;
+    }
+
+    endAskAudio() {
+        const session = this.askAudioSession;
+        if (!session) return;
+        if (session.closing) return session.closing;
+
+        this.sttService.stopMacOSAudioCapture();
+        session.closing = session.ready.catch(() => {}).then(() => this.sttService.closeSessions()).finally(() => {
+            this.askAudioSession = null;
+        });
+        return session.closing;
     }
 
     async handleTranscriptionComplete(speaker, text) {
@@ -217,7 +259,8 @@ class ListenService {
         if (process.platform !== 'darwin') {
             throw new Error('macOS audio capture only available on macOS');
         }
-        return await this.sttService.startMacOSAudioCapture();
+        if (this.askAudioSession?.closing) return false;
+        return await this.sttService.startMacOSAudioCapture({ killExisting: !this.askAudioSession });
     }
 
     async stopMacOSAudioCapture() {
@@ -230,6 +273,7 @@ class ListenService {
 
     async closeSession() {
         try {
+            if (this.askAudioSession) await this.endAskAudio();
             this.sendToRenderer('change-listen-capture-state', { status: "stop" });
             // Close STT sessions
             await this.sttService.closeSessions();
@@ -298,8 +342,8 @@ class ListenService {
             if (this.sttService.isMacOSAudioRunning?.()) {
                 return { success: false, error: 'already_running' };
             }
-            await this.startMacOSAudioCapture();
-            return { success: true, error: null };
+            const started = await this.startMacOSAudioCapture();
+            return started ? { success: true } : { success: false, error: 'Could not start system audio capture.' };
         },
         'macOS audio capture started.',
         'Error starting macOS audio capture:'

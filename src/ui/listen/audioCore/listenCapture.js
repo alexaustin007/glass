@@ -40,6 +40,7 @@ let mediaStream = null;
 let micMediaStream = null;
 let audioContext = null;
 let audioProcessor = null;
+let microphoneGeneration = 0;
 let systemAudioContext = null;
 let systemAudioProcessor = null;
 
@@ -314,15 +315,13 @@ async function setupMicProcessing(micStream) {
             let processedChunk = new Float32Array(chunk); // 기본값
 
             // ───────────────── WASM AEC ─────────────────
-            if (systemAudioBuffer.length > 0) {
-                const latest = systemAudioBuffer[systemAudioBuffer.length - 1];
+            const latest = systemAudioBuffer.at(-1);
+            if (latest && Date.now() - latest.timestamp < 500) {
                 const sysF32 = base64ToFloat32Array(latest.data);
 
                 // **음성 구간일 때만 런**
                 processedChunk = runAecSync(new Float32Array(chunk), sysF32);
                 // console.log('🔊 Applied WASM-AEC (speex)');
-            } else {
-                console.log('🔊 No system audio for AEC reference');
             }
 
             const pcm16 = convertFloat32ToInt16(processedChunk);
@@ -338,8 +337,52 @@ async function setupMicProcessing(micStream) {
     micSource.connect(micProcessor);
     micProcessor.connect(micAudioContext.destination);
 
-    audioProcessor = micProcessor;
     return { context: micAudioContext, processor: micProcessor };
+}
+
+async function startMicrophone() {
+    const generation = ++microphoneGeneration;
+    const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { sampleRate: SAMPLE_RATE, channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        video: false,
+    });
+    if (generation !== microphoneGeneration) {
+        stream.getTracks().forEach(track => track.stop());
+        return false;
+    }
+
+    micMediaStream = stream;
+    try {
+        const { context, processor } = await setupMicProcessing(stream);
+        if (generation !== microphoneGeneration) {
+            processor.disconnect();
+            await context.close();
+            return false;
+        }
+        audioContext = context;
+        audioProcessor = processor;
+        return true;
+    } catch (error) {
+        if (generation === microphoneGeneration) stopMicrophone();
+        throw error;
+    }
+}
+
+function stopMicrophone() {
+    microphoneGeneration++;
+    if (audioProcessor) {
+        audioProcessor.onaudioprocess = null;
+        audioProcessor.disconnect();
+        audioProcessor = null;
+    }
+    if (audioContext) {
+        audioContext.close();
+        audioContext = null;
+    }
+    if (micMediaStream) {
+        micMediaStream.getTracks().forEach(track => track.stop());
+        micMediaStream = null;
+    }
 }
 
 function setupLinuxMicProcessing(micStream) {
@@ -450,21 +493,7 @@ async function startCapture(screenshotIntervalSeconds = 5, imageQuality = 'mediu
             }
 
             try {
-                micMediaStream = await navigator.mediaDevices.getUserMedia({
-                    audio: {
-                        sampleRate: SAMPLE_RATE,
-                        channelCount: 1,
-                        echoCancellation: true,
-                        noiseSuppression: true,
-                        autoGainControl: true,
-                    },
-                    video: false,
-                });
-
-                console.log('macOS microphone capture started');
-                const { context, processor } = await setupMicProcessing(micMediaStream);
-                audioContext = context;
-                audioProcessor = processor;
+                await startMicrophone();
             } catch (micErr) {
                 console.warn('Failed to get microphone on macOS:', micErr);
             }
@@ -572,15 +601,7 @@ async function startCapture(screenshotIntervalSeconds = 5, imageQuality = 'mediu
 }
 
 function stopCapture() {
-    // Clean up microphone resources
-    if (audioProcessor) {
-        audioProcessor.disconnect();
-        audioProcessor = null;
-    }
-    if (audioContext) {
-        audioContext.close();
-        audioContext = null;
-    }
+    stopMicrophone();
 
     // Clean up system audio resources
     if (systemAudioProcessor) {
@@ -596,10 +617,6 @@ function stopCapture() {
     if (mediaStream) {
         mediaStream.getTracks().forEach(track => track.stop());
         mediaStream = null;
-    }
-    if (micMediaStream) {
-        micMediaStream.getTracks().forEach(t => t.stop());
-        micMediaStream = null;
     }
 
     // Stop macOS audio capture if running
@@ -619,6 +636,8 @@ module.exports = {
     disposeAec,      // 필요시 Rust 객체 파괴
     startCapture,
     stopCapture,
+    startMicrophone,
+    stopMicrophone,
     isLinux,
     isMacOS,
 };
@@ -629,4 +648,4 @@ if (typeof window !== 'undefined') {
     window.pickleGlass = window.pickleGlass || {};
     window.pickleGlass.startCapture = startCapture;
     window.pickleGlass.stopCapture = stopCapture;
-} 
+}

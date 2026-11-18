@@ -18,7 +18,7 @@
 
 💬 **Proactive in meetings**—it surfaces action items, summaries, and answers the instant you need them.
 
-🫥️ **Truly invisible**—never shows up in screen recordings, screenshots, or your dock; no always-on capture or hidden sharing.
+🫥️ **Content protection**—Glass requests capture exclusion. Newer macOS screen-sharing apps can still capture the overlay in a full-display share. Share a single window or browser tab and verify what the other participant sees.
 
 To have fun building with us, join our [Discord](https://discord.gg/UCZH5B5Hpd)!
 
@@ -87,7 +87,11 @@ npm run setup
 
 `Ctrl/Cmd + \` : show and hide main window
 
-`Ctrl/Cmd + Enter` : ask AI using all your previous screen and audio
+`Ctrl/Cmd + Enter` : show or hide the Ask panel. On Mac, both `Cmd + Enter` and `Ctrl + Enter` work with the default shortcuts.
+
+`Cmd + Shift + L` (Mac): start or stop transcribing system audio in Ask. Use **Ask about caller** to answer the latest caption in the same panel.
+
+`Cmd + Shift + M` (Mac): start or stop mic dictation. When you stop, the captured text goes into the question box for you to edit and submit. Hiding Ask stops both audio inputs.
 
 `Ctrl/Cmd + Arrows` : move main window position
 

@@ -39,6 +39,7 @@ class SttService {
         // Keep-alive / renewal timers
         this.keepAliveInterval = null;
         this.sessionRenewTimeout = null;
+        this.sessionGeneration = 0;
 
         // Callbacks
         this.onTranscriptionComplete = null;
@@ -47,18 +48,18 @@ class SttService {
         this.modelInfo = null; 
     }
 
-    setCallbacks({ onTranscriptionComplete, onStatusUpdate }) {
+    setCallbacks({ onTranscriptionComplete, onStatusUpdate, getCaptureWindowName }) {
         this.onTranscriptionComplete = onTranscriptionComplete;
         this.onStatusUpdate = onStatusUpdate;
+        this.getCaptureWindowName = getCaptureWindowName;
     }
 
     sendToRenderer(channel, data) {
-        // Listen 관련 이벤트는 Listen 윈도우에만 전송 (Ask 윈도우 충돌 방지)
         const { windowPool } = require('../../../window/windowManager');
-        const listenWindow = windowPool?.get('listen');
+        const captureWindow = windowPool?.get(this.getCaptureWindowName?.() ?? 'listen');
         
-        if (listenWindow && !listenWindow.isDestroyed()) {
-            listenWindow.webContents.send(channel, data);
+        if (captureWindow && !captureWindow.isDestroyed()) {
+            captureWindow.webContents.send(channel, data);
         }
     }
 
@@ -150,12 +151,14 @@ class SttService {
     }
 
     async initializeSttSessions(language = 'en') {
+        const generation = this.sessionGeneration;
         const effectiveLanguage = process.env.OPENAI_TRANSCRIBE_LANG || language || 'en';
 
         const modelInfo = await modelStateService.getCurrentModelInfo('stt');
         if (!modelInfo || !modelInfo.apiKey) {
             throw new Error('AI model or API key is not configured.');
         }
+        if (generation !== this.sessionGeneration) throw new Error('Audio session was stopped.');
         this.modelInfo = modelInfo;
         console.log(`[SttService] Initializing STT for ${modelInfo.provider} using model ${modelInfo.model}`);
 
@@ -465,10 +468,18 @@ class SttService {
         const myOptions = { ...sttOptions, callbacks: mySttConfig.callbacks, sessionType: 'my' };
         const theirOptions = { ...sttOptions, callbacks: theirSttConfig.callbacks, sessionType: 'their' };
 
-        [this.mySttSession, this.theirSttSession] = await Promise.all([
+        const sessions = await Promise.allSettled([
             createSTT(this.modelInfo.provider, myOptions),
             createSTT(this.modelInfo.provider, theirOptions),
         ]);
+        const failedSession = sessions.find(session => session.status === 'rejected');
+        if (failedSession || generation !== this.sessionGeneration) {
+            await Promise.allSettled(sessions.map(async session => {
+                if (session.status === 'fulfilled') await session.value.close();
+            }));
+            throw failedSession?.reason ?? new Error('Audio session was stopped.');
+        }
+        [this.mySttSession, this.theirSttSession] = sessions.map(session => session.value);
 
         console.log('✅ Both STT sessions initialized successfully.');
 
@@ -626,10 +637,11 @@ class SttService {
         });
     }
 
-    async startMacOSAudioCapture() {
+    async startMacOSAudioCapture({ killExisting = true } = {}) {
         if (process.platform !== 'darwin' || !this.theirSttSession) return false;
+        if (this.systemAudioProc) return true;
 
-        await this.killExistingSystemAudioDump();
+        if (killExisting) await this.killExistingSystemAudioDump();
         console.log('Starting macOS audio capture for "Them"...');
 
         const { app } = require('electron');
@@ -640,11 +652,20 @@ class SttService {
 
         console.log('SystemAudioDump path:', systemAudioPath);
 
-        this.systemAudioProc = spawn(systemAudioPath, [], {
+        const captureProcess = spawn(systemAudioPath, [], {
             stdio: ['ignore', 'pipe', 'pipe'],
         });
+        this.systemAudioProc = captureProcess;
 
-        if (!this.systemAudioProc.pid) {
+        const onCaptureEnded = () => {
+            if (this.systemAudioProc !== captureProcess) return;
+            this.systemAudioProc = null;
+            this.sendToRenderer('system-audio-stopped');
+        };
+        captureProcess.once('close', onCaptureEnded);
+        captureProcess.once('error', onCaptureEnded);
+
+        if (!captureProcess.pid) {
             console.error('Failed to start SystemAudioDump');
             return false;
         }
@@ -671,10 +692,10 @@ class SttService {
             throw new Error('STT model info could not be retrieved.');
         }
 
-        this.systemAudioProc.stdout.on('data', async data => {
+        captureProcess.stdout.on('data', async data => {
             audioBuffer = Buffer.concat([audioBuffer, data]);
 
-            while (audioBuffer.length >= CHUNK_SIZE) {
+            while (this.systemAudioProc === captureProcess && audioBuffer.length >= CHUNK_SIZE) {
                 const chunk = audioBuffer.slice(0, CHUNK_SIZE);
                 audioBuffer = audioBuffer.slice(CHUNK_SIZE);
 
@@ -702,18 +723,8 @@ class SttService {
             }
         });
 
-        this.systemAudioProc.stderr.on('data', data => {
+        captureProcess.stderr.on('data', data => {
             console.error('SystemAudioDump stderr:', data.toString());
-        });
-
-        this.systemAudioProc.on('close', code => {
-            console.log('SystemAudioDump process closed with code:', code);
-            this.systemAudioProc = null;
-        });
-
-        this.systemAudioProc.on('error', err => {
-            console.error('SystemAudioDump process error:', err);
-            this.systemAudioProc = null;
         });
 
         return true;
@@ -744,6 +755,7 @@ class SttService {
     }
 
     async closeSessions() {
+        this.sessionGeneration++;
         this.stopMacOSAudioCapture();
 
         // Clear heartbeat / renewal timers
@@ -788,4 +800,4 @@ class SttService {
     }
 }
 
-module.exports = SttService; 
+module.exports = SttService;

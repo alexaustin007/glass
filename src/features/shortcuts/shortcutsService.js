@@ -66,6 +66,7 @@ class ShortcutsService {
             toggleVisibility: isMac ? 'Cmd+\\' : 'Ctrl+\\',
             toggleClickThrough: isMac ? 'Cmd+M' : 'Ctrl+M',
             nextStep: isMac ? 'Cmd+Enter' : 'Ctrl+Enter',
+            ...(isMac ? { toggleCallerAudio: 'Cmd+Shift+L', toggleMicrophone: 'Cmd+Shift+M' } : {}),
             manualScreenshot: isMac ? 'Cmd+Shift+S' : 'Ctrl+Shift+S',
             previousResponse: isMac ? 'Cmd+[' : 'Ctrl+[',
             nextResponse: isMac ? 'Cmd+]' : 'Ctrl+]',
@@ -160,11 +161,40 @@ class ShortcutsService {
         
         sendToRenderer('shortcuts-updated', keybinds);
 
+        const toggleAsk = async () => {
+            if (!this.allWindowVisibility) {
+                await this.toggleAllWindowsVisibility();
+                if (this.windowPool.get('ask')?.isVisible()) return;
+            }
+            askService.toggleAskButton();
+        };
+        const toggleAudio = source => {
+            const askWindow = this.windowPool.get('ask');
+            if (!this.allWindowVisibility || !askWindow || askWindow.isDestroyed()) return;
+            if (!askWindow.isVisible()) askService.toggleAskButton();
+            askWindow.webContents.send('ask:audioShortcut', source);
+        };
+
+        const register = (accelerator, callback) => {
+            try {
+                if (!globalShortcut.register(accelerator, callback)) {
+                    console.warn(`[Shortcuts] Shortcut unavailable: ${accelerator}`);
+                }
+            } catch (error) {
+                console.warn(`[Shortcuts] Invalid shortcut ${accelerator}: ${error.message}`);
+            }
+        };
+
+        if (keybinds.nextStep) register(keybinds.nextStep, toggleAsk);
+        if (process.platform === 'darwin' && keybinds.nextStep === 'Cmd+Enter' &&
+            !Object.values(keybinds).some(key => /^(Ctrl|Control)\+(Enter|Return)$/i.test(key))) {
+            register('Ctrl+Enter', toggleAsk);
+        }
+
         if (registerOnlyToggleVisibility) {
             if (keybinds.toggleVisibility) {
                 globalShortcut.register(keybinds.toggleVisibility, () => this.toggleAllWindowsVisibility());
             }
-            console.log('[Shortcuts] registerOnlyToggleVisibility, only toggleVisibility shortcut is registered.');
             return;
         }
 
@@ -197,7 +227,8 @@ class ShortcutsService {
             if (keybinds.toggleVisibility) {
                 globalShortcut.register(keybinds.toggleVisibility, () => this.toggleAllWindowsVisibility());
             }
-            console.log('[Shortcuts] ApiKeyHeader is active, only toggleVisibility shortcut is registered.');
+            if (keybinds.toggleCallerAudio) register(keybinds.toggleCallerAudio, () => toggleAudio('caller'));
+            if (keybinds.toggleMicrophone) register(keybinds.toggleMicrophone, () => toggleAudio('mic'));
             return;
         }
 
@@ -210,8 +241,11 @@ class ShortcutsService {
                 case 'toggleVisibility':
                     callback = () => this.toggleAllWindowsVisibility();
                     break;
-                case 'nextStep':
-                    callback = () => askService.toggleAskButton(true);
+                case 'toggleCallerAudio':
+                    callback = () => toggleAudio('caller');
+                    break;
+                case 'toggleMicrophone':
+                    callback = () => toggleAudio('mic');
                     break;
                 case 'scrollUp':
                     callback = () => {
@@ -265,13 +299,7 @@ class ShortcutsService {
                     break;
             }
             
-            if (callback) {
-                try {
-                    globalShortcut.register(accelerator, callback);
-                } catch(e) {
-                    console.error(`[Shortcuts] Failed to register shortcut for "${action}" (${accelerator}):`, e.message);
-                }
-            }
+            if (callback) register(accelerator, callback);
         }
         console.log('[Shortcuts] All shortcuts have been registered.');
     }

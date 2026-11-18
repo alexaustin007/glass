@@ -151,7 +151,20 @@ contextBridge.exposeInMainWorld('api', {
     adjustWindowHeight: (winName, height) => ipcRenderer.invoke('adjust-window-height', { winName, height }),
     
     // Message Handling
-    sendMessage: (text) => ipcRenderer.invoke('ask:sendQuestionFromAsk', text),
+    sendMessage: (text, includeScreenshot) => ipcRenderer.invoke('ask:sendQuestionFromAsk', text, includeScreenshot),
+    beginAudio: () => ipcRenderer.invoke('ask:beginAudio'),
+    endAudio: () => ipcRenderer.invoke('ask:endAudio'),
+    getShortcuts: () => ipcRenderer.invoke('settings:getCurrentShortcuts'),
+    onShortcutsUpdated: callback => ipcRenderer.on('shortcuts-updated', callback),
+    removeOnShortcutsUpdated: callback => ipcRenderer.removeListener('shortcuts-updated', callback),
+    onAudioShortcut: callback => ipcRenderer.on('ask:audioShortcut', callback),
+    removeOnAudioShortcut: callback => ipcRenderer.removeListener('ask:audioShortcut', callback),
+    onAudioPaused: callback => ipcRenderer.on('ask:audioPaused', callback),
+    removeOnAudioPaused: callback => ipcRenderer.removeListener('ask:audioPaused', callback),
+    onTranscript: callback => ipcRenderer.on('stt-update', callback),
+    removeOnTranscript: callback => ipcRenderer.removeListener('stt-update', callback),
+    onCallerAudioStopped: callback => ipcRenderer.on('system-audio-stopped', callback),
+    removeOnCallerAudioStopped: callback => ipcRenderer.removeListener('system-audio-stopped', callback),
 
     // Listeners
     onAskStateUpdate: (callback) => ipcRenderer.on('ask:stateUpdate', callback),

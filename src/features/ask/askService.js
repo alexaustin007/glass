@@ -144,35 +144,13 @@ class AskService {
         }
     }
 
-    async toggleAskButton(inputScreenOnly = false) {
+    toggleAskButton() {
         const askWindow = getWindowPool()?.get('ask');
-
-        let shouldSendScreenOnly = false;
-        if (inputScreenOnly && this.state.showTextInput && askWindow && askWindow.isVisible()) {
-            shouldSendScreenOnly = true;
-            await this.sendMessage('', []);
-            return;
-        }
-
-        const hasContent = this.state.isLoading || this.state.isStreaming || (this.state.currentResponse && this.state.currentResponse.length > 0);
-
-        if (askWindow && askWindow.isVisible() && hasContent) {
-            this.state.showTextInput = !this.state.showTextInput;
-            this._broadcastState();
-        } else {
-            if (askWindow && askWindow.isVisible()) {
-                internalBridge.emit('window:requestVisibility', { name: 'ask', visible: false });
-                this.state.isVisible = false;
-            } else {
-                console.log('[AskService] Showing hidden Ask window');
-                internalBridge.emit('window:requestVisibility', { name: 'ask', visible: true });
-                this.state.isVisible = true;
-            }
-            if (this.state.isVisible) {
-                this.state.showTextInput = true;
-                this._broadcastState();
-            }
-        }
+        if (!askWindow || askWindow.isDestroyed()) return;
+        this.state.isVisible = !askWindow.isVisible();
+        this.state.showTextInput = true;
+        internalBridge.emit('window:requestVisibility', { name: 'ask', visible: this.state.isVisible });
+        this._broadcastState();
     }
 
     async closeAskWindow () {
@@ -215,7 +193,7 @@ class AskService {
      * @param {string} userPrompt
      * @returns {Promise<{success: boolean, response?: string, error?: string}>}
      */
-    async sendMessage(userPrompt, conversationHistoryRaw=[]) {
+    async sendMessage(userPrompt, conversationHistoryRaw = [], { includeScreenshot = true } = {}) {
         internalBridge.emit('window:requestVisibility', { name: 'ask', visible: true });
         this.state = {
             ...this.state,
@@ -223,7 +201,7 @@ class AskService {
             isStreaming: false,
             currentQuestion: userPrompt,
             currentResponse: '',
-            showTextInput: false,
+            showTextInput: true,
         };
         this._broadcastState();
 
@@ -249,8 +227,8 @@ class AskService {
             }
             console.log(`[AskService] Using model: ${modelInfo.model} for provider: ${modelInfo.provider}`);
 
-            const screenshotResult = await captureScreenshot({ quality: 'medium' });
-            const screenshotBase64 = screenshotResult.success ? screenshotResult.base64 : null;
+            const screenshotResult = includeScreenshot ? await captureScreenshot({ quality: 'medium' }) : null;
+            const screenshotBase64 = screenshotResult?.success ? screenshotResult.base64 : null;
 
             const conversationHistory = this._formatConversationForPrompt(conversationHistoryRaw);
 

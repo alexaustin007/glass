@@ -1,5 +1,6 @@
 import { html, css, LitElement } from '../../ui/assets/lit-core-2.7.4.min.js';
 import { parser, parser_write, parser_end, default_renderer } from '../../ui/assets/smd.js';
+import './AudioControls.js';
 
 export class AskView extends LitElement {
     static properties = {
@@ -14,6 +15,7 @@ export class AskView extends LitElement {
         headerText: { type: String },
         headerAnimating: { type: Boolean },
         isStreaming: { type: Boolean },
+        requestError: { state: true },
     };
 
     static styles = css`
@@ -664,6 +666,12 @@ export class AskView extends LitElement {
         .submit-btn:hover, .clear-btn:hover {
             background: rgba(255,255,255,0.1);
         }
+        .ask-error {
+            margin: 8px 16px;
+            color: #fecaca;
+            font-size: 12px;
+            overflow-wrap: anywhere;
+        }
         .btn-label {
             margin-right: 8px;
             display: flex;
@@ -721,6 +729,8 @@ export class AskView extends LitElement {
         this.headerText = 'AI Response';
         this.headerAnimating = false;
         this.isStreaming = false;
+        this.requestError = '';
+        this.voiceDraft = false;
 
         this.marked = null;
         this.hljs = null;
@@ -756,17 +766,14 @@ export class AskView extends LitElement {
 
         this.resizeObserver = new ResizeObserver(entries => {
             for (const entry of entries) {
-                const needed = entry.contentRect.height;
-                const current = window.innerHeight;
-
-                if (needed > current - 4) {
-                    this.requestWindowResize(Math.ceil(needed));
-                }
+                if (entry.target.localName === 'ask-audio-controls') this.adjustWindowHeightThrottled();
             }
         });
 
-        const container = this.shadowRoot?.querySelector('.ask-container');
-        if (container) this.resizeObserver.observe(container);
+        this.updateComplete.then(() => {
+            const controls = this.shadowRoot?.querySelector('ask-audio-controls');
+            if (controls && this.isConnected) this.resizeObserver.observe(controls);
+        });
 
         this.handleQuestionFromAssistant = (event, question) => {
             console.log('AskView: Received question from ListenView:', question);
@@ -795,12 +802,8 @@ export class AskView extends LitElement {
                 const wasHidden = !this.showTextInput;
                 this.showTextInput = newState.showTextInput;
               
-                if (newState.showTextInput) {
-                  if (wasHidden) {
+                if (newState.showTextInput && wasHidden) {
                     this.updateComplete.then(() => this.focusTextInput());
-                  } else {
-                    this.focusTextInput();
-                  }
                 }
               });
             console.log('AskView: IPC 이벤트 리스너 등록 완료');
@@ -827,7 +830,7 @@ export class AskView extends LitElement {
             clearTimeout(this.streamingTimeout);
         }
 
-        Object.values(this.lineCopyTimeouts).forEach(timeout => clearTimeout(timeout));
+        Object.values(this.lineCopyTimeouts ?? {}).forEach(timeout => clearTimeout(timeout));
 
         if (window.api) {
             window.api.askView.removeOnAskStateUpdate(this.handleAskStateUpdate);
@@ -1121,12 +1124,6 @@ export class AskView extends LitElement {
     }
 
 
-    requestWindowResize(targetHeight) {
-        if (window.api) {
-            window.api.askView.adjustWindowHeight(targetHeight);
-        }
-    }
-
     animateHeaderText(text) {
         this.headerAnimating = true;
         this.requestUpdate();
@@ -1272,14 +1269,37 @@ export class AskView extends LitElement {
     async handleSendText(e, overridingText = '') {
         const textInput = this.shadowRoot?.getElementById('textInput');
         const text = (overridingText || textInput?.value || '').trim();
-        // if (!text) return;
+        if (this.isLoading || this.isStreaming || !textInput) return;
 
-        textInput.value = '';
+        const includeScreenshot = !this.voiceDraft;
+        try {
+            this.requestError = '';
+            const result = await window.api.askView.sendMessage(text, includeScreenshot);
+            if (!result?.success) throw new Error(result?.error || 'Glass could not answer the question.');
+            if (textInput.value.trim() === text) {
+                textInput.value = '';
+                this.voiceDraft = false;
+            }
+        } catch (error) {
+            this.requestError = error.message;
+        }
+    }
 
-        if (window.api) {
-            window.api.askView.sendMessage(text).catch(error => {
-                console.error('Error sending text:', error);
-            });
+    handleVoiceQuestion(event) {
+        const input = this.shadowRoot.getElementById('textInput');
+        this.voiceDraft = true;
+        input.value = [input.value.trim(), event.detail].filter(Boolean).join(' ');
+        if (document.hasFocus()) input.focus();
+    }
+
+    async handleCallerQuestion(event) {
+        if (this.isLoading || this.isStreaming) return;
+        try {
+            this.requestError = '';
+            const result = await window.api.askView.sendMessage(`Respond briefly to the caller's question.\n\nCaller: ${event.detail}`, false);
+            if (!result?.success) throw new Error(result?.error || 'Glass could not answer the caller.');
+        } catch (error) {
+            this.requestError = error.message;
         }
     }
 
@@ -1289,10 +1309,7 @@ export class AskView extends LitElement {
             return;
         }
 
-        const isPlainEnter = e.key === 'Enter' && !e.shiftKey && !e.metaKey && !e.ctrlKey;
-        const isModifierEnter = e.key === 'Enter' && (e.metaKey || e.ctrlKey);
-
-        if (isPlainEnter || isModifierEnter) {
+        if (e.key === 'Enter' && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
             e.preventDefault();
             this.handleSendText();
         }
@@ -1306,7 +1323,7 @@ export class AskView extends LitElement {
             this.renderContent();
         }
     
-        if (changedProperties.has('showTextInput') || changedProperties.has('isLoading') || changedProperties.has('currentResponse')) {
+        if (changedProperties.has('showTextInput') || changedProperties.has('isLoading') || changedProperties.has('currentResponse') || changedProperties.has('requestError')) {
             this.adjustWindowHeightThrottled();
         }
     
@@ -1334,6 +1351,9 @@ export class AskView extends LitElement {
 
         return html`
             <div class="ask-container">
+                ${window.api.platform.isMacOS ? html`
+                    <ask-audio-controls @voice-question=${this.handleVoiceQuestion} @caller-question=${this.handleCallerQuestion}></ask-audio-controls>
+                ` : ''}
                 <!-- Response Header -->
                 <div class="response-header ${!hasResponse ? 'hidden' : ''}">
                     <div class="header-left">
@@ -1380,6 +1400,8 @@ export class AskView extends LitElement {
                     <!-- Content is dynamically generated in updateResponseContent() -->
                 </div>
 
+                ${this.requestError ? html`<p class="ask-error" role="alert">${this.requestError}</p>` : ''}
+
                 <!-- Text Input Container -->
                 <div class="text-input-container ${!hasResponse ? 'no-response' : ''} ${!this.showTextInput ? 'hidden' : ''}">
                     <input
@@ -1391,6 +1413,7 @@ export class AskView extends LitElement {
                     />
                     <button
                         class="submit-btn"
+                        ?disabled=${this.isLoading || this.isStreaming}
                         @click=${this.handleSendText}
                     >
                         <span class="btn-label">Submit</span>
@@ -1411,14 +1434,16 @@ export class AskView extends LitElement {
             const headerEl = this.shadowRoot.querySelector('.response-header');
             const responseEl = this.shadowRoot.querySelector('.response-container');
             const inputEl = this.shadowRoot.querySelector('.text-input-container');
+            const controlsHeight = this.shadowRoot.querySelector('ask-audio-controls')?.offsetHeight ?? 0;
+            const errorHeight = this.shadowRoot.querySelector('.ask-error')?.offsetHeight ?? 0;
 
             if (!headerEl || !responseEl) return;
 
             const headerHeight = headerEl.classList.contains('hidden') ? 0 : headerEl.offsetHeight;
-            const responseHeight = responseEl.scrollHeight;
+            const responseHeight = Math.min(400, responseEl.scrollHeight);
             const inputHeight = (inputEl && !inputEl.classList.contains('hidden')) ? inputEl.offsetHeight : 0;
 
-            const idealHeight = headerHeight + responseHeight + inputHeight;
+            const idealHeight = headerHeight + responseHeight + inputHeight + controlsHeight + (errorHeight ? errorHeight + 16 : 0);
 
             const targetHeight = Math.min(700, idealHeight);
 

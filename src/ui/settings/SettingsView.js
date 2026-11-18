@@ -1059,7 +1059,11 @@ export class SettingsView extends LitElement {
     getMainShortcuts() {
         return [
             { name: 'Show / Hide', accelerator: this.shortcuts.toggleVisibility },
-            { name: 'Ask Anything', accelerator: this.shortcuts.nextStep },
+            { name: 'Show / Hide Ask', accelerator: this.shortcuts.nextStep },
+            ...(this.shortcuts.toggleCallerAudio ? [
+                { name: 'Start / Stop Caller Audio', accelerator: this.shortcuts.toggleCallerAudio },
+                { name: 'Start / Stop Microphone', accelerator: this.shortcuts.toggleMicrophone },
+            ] : []),
             { name: 'Scroll Up Response', accelerator: this.shortcuts.scrollUp },
             { name: 'Scroll Down Response', accelerator: this.shortcuts.scrollDown },
         ];

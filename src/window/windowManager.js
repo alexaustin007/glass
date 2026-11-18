@@ -6,6 +6,7 @@ const os = require('os');
 const shortcutsService = require('../features/shortcuts/shortcutsService');
 const internalBridge = require('../bridge/internalBridge');
 const permissionRepository = require('../features/common/repositories/permission');
+const listenService = require('../features/listen/listenService');
 
 /* ────────────────[ GLASS BYPASS ]─────────────── */
 let liquidGlass;
@@ -492,6 +493,13 @@ function createFeatureWindows(header, namesToCreate) {
             // ask
             case 'ask': {
                 const ask = new BrowserWindow({ ...commonChildOptions, width:600 });
+                const endAudio = () => Promise.resolve(listenService.endAskAudio()).catch(console.error);
+                ask.on('hide', () => {
+                    ask.webContents.send('ask:audioPaused');
+                    endAudio();
+                });
+                ask.on('closed', endAudio);
+                ask.webContents.on('render-process-gone', endAudio);
                 ask.setContentProtection(isContentProtectionOn);
                 ask.setVisibleOnAllWorkspaces(true,{visibleOnFullScreen:true});
                 if (process.platform === 'darwin') {
@@ -717,6 +725,8 @@ function createWindows() {
 
     if (currentHeaderState === 'main') {
         createFeatureWindows(header, ['listen', 'ask', 'settings', 'shortcut-settings']);
+    } else {
+        createFeatureWindows(header, 'ask');
     }
 
     header.setContentProtection(isContentProtectionOn);
@@ -785,6 +795,7 @@ const handleHeaderStateChanged = (state) => {
         createFeatureWindows(windowPool.get('header'));
     } else {         // 'apikey' | 'permission'
         destroyFeatureWindows();
+        createFeatureWindows(windowPool.get('header'), 'ask');
     }
     internalBridge.emit('reregister-shortcuts');
 };

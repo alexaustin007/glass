@@ -79,10 +79,22 @@ module.exports = {
     ipcMain.handle('ollama:shutdown', async (event, force = false) => await ollamaService.handleShutdown(force));
 
     // Ask
-    ipcMain.handle('ask:sendQuestionFromAsk', async (event, userPrompt) => await askService.sendMessage(userPrompt));
+    ipcMain.handle('ask:sendQuestionFromAsk', (event, userPrompt, includeScreenshot) =>
+      askService.sendMessage(userPrompt, [], { includeScreenshot: includeScreenshot !== false }));
     ipcMain.handle('ask:sendQuestionFromSummary', async (event, userPrompt) => await askService.sendMessage(userPrompt));
     ipcMain.handle('ask:toggleAskButton', async () => await askService.toggleAskButton());
     ipcMain.handle('ask:closeAskWindow',  async () => await askService.closeAskWindow());
+    ipcMain.handle('ask:beginAudio', event => {
+      const askWindow = require('../window/windowManager').windowPool.get('ask');
+      if (!askWindow?.isVisible() || event.sender !== askWindow.webContents) {
+        throw new Error('Open the Ask panel to use its audio controls.');
+      }
+      return listenService.beginAskAudio();
+    });
+    ipcMain.handle('ask:endAudio', event => {
+      const askWindow = require('../window/windowManager').windowPool.get('ask');
+      if (event.sender === askWindow?.webContents) return listenService.endAskAudio();
+    });
     
     // Listen
     ipcMain.handle('listen:sendMicAudio', async (event, { data, mimeType }) => await listenService.handleSendMicAudioContent(data, mimeType));
