@@ -128,6 +128,16 @@ class SttService {
         }
     }
 
+    handleGeminiTranscript(speaker, content) {
+        const final = content?.inputTranscription?.text?.trim();
+        const text = final || content?.interimInputTranscription?.text?.trim();
+        if (!text) return;
+        if (final) this.onTranscriptionComplete?.(speaker, final);
+        this.sendToRenderer('stt-update', {
+            speaker, text, isPartial: !final, isFinal: Boolean(final), timestamp: Date.now(),
+        });
+    }
+
     debounceMyCompletion(text) {
         if (this.modelInfo?.provider === 'gemini') {
             this.myCompletionBuffer += text;
@@ -210,36 +220,8 @@ class SttService {
                 }
                 return;
             } else if (this.modelInfo.provider === 'gemini') {
-                if (!message.serverContent?.modelTurn) {
-                    console.log('[Gemini STT - Me]', JSON.stringify(message, null, 2));
-                }
+                this.handleGeminiTranscript('Me', message.serverContent);
 
-                if (message.serverContent?.turnComplete) {
-                    if (this.myCompletionTimer) {
-                        clearTimeout(this.myCompletionTimer);
-                        this.flushMyCompletion();
-                    }
-                    return;
-                }
-            
-                const transcription = message.serverContent?.inputTranscription;
-                if (!transcription || !transcription.text) return;
-                
-                const textChunk = transcription.text;
-                if (!textChunk.trim() || textChunk.trim() === '<noise>') {
-                    return; // 1. Ignore whitespace-only chunks or noise
-                }
-            
-                this.debounceMyCompletion(textChunk);
-                
-                this.sendToRenderer('stt-update', {
-                    speaker: 'Me',
-                    text: this.myCompletionBuffer,
-                    isPartial: true,
-                    isFinal: false,
-                    timestamp: Date.now(),
-                });
-                
             // Deepgram 
             } else if (this.modelInfo.provider === 'deepgram') {
                 const text = message.channel?.alternatives?.[0]?.transcript;
@@ -353,35 +335,7 @@ class SttService {
                 }
                 return;
             } else if (this.modelInfo.provider === 'gemini') {
-                if (!message.serverContent?.modelTurn) {
-                    console.log('[Gemini STT - Them]', JSON.stringify(message, null, 2));
-                }
-
-                if (message.serverContent?.turnComplete) {
-                    if (this.theirCompletionTimer) {
-                        clearTimeout(this.theirCompletionTimer);
-                        this.flushTheirCompletion();
-                    }
-                    return;
-                }
-            
-                const transcription = message.serverContent?.inputTranscription;
-                if (!transcription || !transcription.text) return;
-
-                const textChunk = transcription.text;
-                if (!textChunk.trim() || textChunk.trim() === '<noise>') {
-                    return; // 1. Ignore whitespace-only chunks or noise
-                }
-
-                this.debounceTheirCompletion(textChunk);
-                
-                this.sendToRenderer('stt-update', {
-                    speaker: 'Them',
-                    text: this.theirCompletionBuffer,
-                    isPartial: true,
-                    isFinal: false,
-                    timestamp: Date.now(),
-                });
+                this.handleGeminiTranscript('Them', message.serverContent);
 
             // Deepgram
             } else if (this.modelInfo.provider === 'deepgram') {

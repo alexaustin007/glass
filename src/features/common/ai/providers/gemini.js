@@ -1,5 +1,5 @@
 const { GoogleGenerativeAI } = require("@google/generative-ai")
-const { GoogleGenAI } = require("@google/genai")
+const WebSocket = require("ws")
 
 class GeminiProvider {
     static async validateApiKey(key) {
@@ -8,8 +8,8 @@ class GeminiProvider {
         }
 
         try {
-            const validationUrl = `https://generativelanguage.googleapis.com/v1beta/models?key=${key}`;
-            const response = await fetch(validationUrl);
+            const validationUrl = `https://generativelanguage.googleapis.com/v1beta/models`;
+            const response = await fetch(validationUrl, { headers: { 'x-goog-api-key': key } });
 
             if (response.ok) {
                 return { success: true };
@@ -34,34 +34,75 @@ class GeminiProvider {
  * @param {object} [opts.callbacks] - Event callbacks
  * @returns {Promise<object>} STT session
  */
-async function createSTT({ apiKey, language = "en-US", callbacks = {}, ...config }) {
-  const liveClient = new GoogleGenAI({ vertexai: false, apiKey })
+async function createSTT({ apiKey, language = 'en', callbacks = {} }) {
+  const url = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent';
+  let socket, connecting, completeFlush;
+  let stopped = false;
+  let sentAudio = false;
 
-  // Language code BCP-47 conversion
-  const lang = language.includes("-") ? language : `${language}-US`
-
-  const session = await liveClient.live.connect({
-
-    model: 'gemini-live-2.5-flash-preview',
-    callbacks: {
-      ...callbacks,
-      onMessage: (msg) => {
-        if (!msg || typeof msg !== 'object') return;
-        msg.provider = 'gemini';
-        callbacks.onmessage?.(msg);
-      }
-    },
-
-    config: {
-      inputAudioTranscription: {},
-      speechConfig: { languageCode: lang },
-    },
-  })
-
-  return {
-    sendRealtimeInput: async (payload) => session.sendRealtimeInput(payload),
-    close: async () => session.close(),
+  function connect() {
+    if (stopped) throw new Error('Gemini transcription has stopped.');
+    if (connecting) return connecting;
+    if (socket?.readyState === WebSocket.OPEN) return Promise.resolve();
+    socket = new WebSocket(url, { headers: { 'x-goog-api-key': apiKey } });
+    const ws = socket;
+    connecting = new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => ws.terminate(), 10000);
+      ws.on('open', () => ws.send(JSON.stringify({ setup: {
+        model: 'models/gemini-3.5-transcribe-live',
+        generationConfig: { responseModalities: ['TEXT'] },
+        inputAudioTranscription: { languageCodes: [language] },
+      } })));
+      ws.on('message', bytes => {
+        const message = JSON.parse(bytes.toString());
+        if (message.setupComplete) {
+          clearTimeout(timeout);
+          resolve();
+        }
+        if (ws !== socket || stopped) return;
+        callbacks.onmessage?.(message);
+        if (message.serverContent?.inputTranscription?.text) completeFlush?.();
+      });
+      ws.on('error', () => reject(new Error('Could not connect to Gemini live transcription.')));
+      ws.on('close', code => {
+        clearTimeout(timeout);
+        reject(new Error(`Gemini closed the transcription connection (code ${code}).`));
+        if (ws === socket) {
+          completeFlush?.();
+          callbacks.onclose?.({ reason: String(code) });
+        }
+      });
+    }).finally(() => { connecting = null; });
+    return connecting;
   }
+
+  await connect();
+  return {
+    async sendRealtimeInput(payload) {
+      await connect();
+      socket.send(JSON.stringify({ realtimeInput: payload }));
+      sentAudio = true;
+    },
+    async flush() {
+      if (!sentAudio || socket?.readyState !== WebSocket.OPEN) return;
+      sentAudio = false;
+      await new Promise(resolve => {
+        // Silence can finish a turn before the user presses Stop.
+        const timer = setTimeout(() => completeFlush?.(), 3000);
+        completeFlush = () => {
+          clearTimeout(timer);
+          completeFlush = null;
+          resolve();
+        };
+        socket.send(JSON.stringify({ realtimeInput: { audioStreamEnd: true } }));
+      });
+    },
+    close() {
+      stopped = true;
+      completeFlush?.();
+      socket.close();
+    },
+  };
 }
 
 /**

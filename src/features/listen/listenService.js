@@ -270,6 +270,9 @@ class ListenService {
 
     async stopMacOSAudioCapture() {
         this.sttService.stopMacOSAudioCapture();
+        if (this.askAudioSession && this.sttService.modelInfo?.provider === 'gemini') {
+            await this.sttService.theirSttSession?.flush();
+        }
     }
 
     isSessionActive() {
