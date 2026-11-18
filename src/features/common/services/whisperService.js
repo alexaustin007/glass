@@ -1,5 +1,5 @@
 const { EventEmitter } = require('events');
-const { spawn, exec } = require('child_process');
+const { spawn, exec, execFile } = require('child_process');
 const { promisify } = require('util');
 const path = require('path');
 const fs = require('fs');
@@ -10,6 +10,7 @@ const { spawnAsync } = require('../utils/spawnHelper');
 const { DOWNLOAD_CHECKSUMS } = require('../config/checksums');
 
 const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 const fsPromises = fs.promises;
 
@@ -357,27 +358,34 @@ class WhisperService extends EventEmitter {
         this.sessionPool = [];
     }
 
-    async ensureWhisperBinary() {
-        const whisperCliPath = await this.checkCommand('whisper-cli');
-        if (whisperCliPath) {
-            this.whisperPath = whisperCliPath;
-            console.log(`[WhisperService] Found whisper-cli at: ${this.whisperPath}`);
-            return;
-        }
-
-        const whisperPath = await this.checkCommand('whisper');
-        if (whisperPath) {
-            this.whisperPath = whisperPath;
-            console.log(`[WhisperService] Found whisper at: ${this.whisperPath}`);
-            return;
-        }
-
+    async supportsWhisperCpp(binary) {
         try {
-            await fsPromises.access(this.whisperPath, fs.constants.X_OK);
-            console.log('[WhisperService] Custom whisper binary found');
+            const { stdout, stderr } = await execFileAsync(binary, ['--help'], { timeout: 5000 });
+            const help = stdout + stderr;
+            return ['--model', '--file', '--no-timestamps'].every(flag => help.includes(flag));
+        } catch {
+            return false;
+        }
+    }
+
+    async findWhisperBinary() {
+        const local = this.getLocalBinaryPath();
+        if (await this.supportsWhisperCpp(local)) return local;
+
+        for (const command of ['whisper-cli', 'whisper']) {
+            const paths = await this.checkCommand(command);
+            for (const binary of paths ? paths.split(/\r?\n/) : []) {
+                if (await this.supportsWhisperCpp(binary)) return binary;
+            }
+        }
+        return null;
+    }
+
+    async ensureWhisperBinary() {
+        const binary = await this.findWhisperBinary();
+        if (binary) {
+            this.whisperPath = binary;
             return;
-        } catch (error) {
-            // Continue to installation
         }
 
         const platform = this.getPlatform();
@@ -396,6 +404,7 @@ class WhisperService extends EventEmitter {
             }
         }
 
+        this.whisperPath = this.getLocalBinaryPath();
         await this.autoInstall();
         
         // verify installation
@@ -414,17 +423,8 @@ class WhisperService extends EventEmitter {
         console.log('[WhisperService] Installing whisper-cpp via Homebrew...');
         await spawnAsync('brew', ['install', 'whisper-cpp']);
         
-        const whisperCliPath = await this.checkCommand('whisper-cli');
-        if (whisperCliPath) {
-            this.whisperPath = whisperCliPath;
-            console.log(`[WhisperService] Whisper-cli installed via Homebrew at: ${this.whisperPath}`);
-        } else {
-            const whisperPath = await this.checkCommand('whisper');
-            if (whisperPath) {
-                this.whisperPath = whisperPath;
-                console.log(`[WhisperService] Whisper installed via Homebrew at: ${this.whisperPath}`);
-            }
-        }
+        this.whisperPath = await this.findWhisperBinary();
+        if (!this.whisperPath) throw new Error('Homebrew installation did not provide a compatible whisper.cpp executable.');
     }
 
 
@@ -626,13 +626,7 @@ class WhisperService extends EventEmitter {
     }
 
     async isInstalled() {
-        try {
-            if (await this.checkCommand('whisper-cli') || await this.checkCommand('whisper')) return true;
-            await fsPromises.access(this.getLocalBinaryPath(), fs.constants.X_OK);
-            return true;
-        } catch (error) {
-            return false;
-        }
+        return Boolean(await this.findWhisperBinary());
     }
 
     getLocalBinaryPath() {
@@ -849,16 +843,10 @@ WhisperService.prototype.verifyInstallation = async function() {
             return { success: false, error: 'Whisper binary not executable' };
         }
         
-        // 2. check version
-        try {
-            const { stdout } = await spawnAsync(this.whisperPath, ['--help']);
-            if (!stdout.includes('whisper')) {
-                return { success: false, error: 'Invalid whisper binary' };
-            }
-        } catch (error) {
-            return { success: false, error: 'Whisper binary not responding' };
+        if (!await this.supportsWhisperCpp(this.whisperPath)) {
+            return { success: false, error: 'Glass needs the whisper.cpp command-line executable.' };
         }
-        
+
         // 3. check directories
         try {
             await fsPromises.access(this.modelsDir, fs.constants.W_OK);
