@@ -158,6 +158,16 @@ export class WelcomeHeader extends LitElement {
             cursor: pointer;
             -webkit-app-region: no-drag;
         }
+        .ask-preview {
+            align-self: center;
+            color: #fff;
+            background: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 8px;
+            padding: 7px 12px;
+            cursor: pointer;
+            -webkit-app-region: no-drag;
+        }
     `;
 
     static properties = {
@@ -217,6 +227,9 @@ export class WelcomeHeader extends LitElement {
                         <div class="button-icon"><div class="arrow-icon"></div></div>
                     </button>
                 </div>
+                <button class="ask-preview" type="button" @click=${() => window.api.mainHeader.sendAskButtonClick()}>
+                    Open Ask panel
+                </button>
                 <div class="footer">
                     Glass does not collect your personal data —
                     <span class="footer-link" @click=${this.openPrivacyPolicy}>See details</span>
