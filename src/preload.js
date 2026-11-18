@@ -152,6 +152,7 @@ contextBridge.exposeInMainWorld('api', {
     // Message Handling
     sendMessage: (text, includeScreenshot) => ipcRenderer.invoke('ask:sendQuestionFromAsk', text, includeScreenshot),
     beginAudio: source => ipcRenderer.invoke('ask:beginAudio', source),
+    finishMicrophone: () => ipcRenderer.invoke('ask:finishMicrophone'),
     endAudio: () => ipcRenderer.invoke('ask:endAudio'),
     getShortcuts: () => ipcRenderer.invoke('settings:getCurrentShortcuts'),
     onShortcutsUpdated: callback => ipcRenderer.on('shortcuts-updated', callback),

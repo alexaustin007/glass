@@ -584,6 +584,13 @@ class SttService {
         await this.mySttSession.sendRealtimeInput(payload);
     }
 
+    async finishMicrophoneInput() {
+        await this.mySttSession?.flush?.();
+        clearTimeout(this.myCompletionTimer);
+        this.myCompletionTimer = null;
+        this.flushMyCompletion();
+    }
+
     async sendSystemAudioContent(data, mimeType) {
         if (!this.theirSttSession) {
             throw new Error('Their STT session not active');

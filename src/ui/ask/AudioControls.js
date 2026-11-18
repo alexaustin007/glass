@@ -105,6 +105,7 @@ export class AudioControls extends LitElement {
         const text = this.micText.trim();
         this.micFinal = this.micPartial = this.micText = '';
         if (text) this.dispatchEvent(new CustomEvent('voice-question', { detail: text }));
+        return !!text;
     }
 
     async toggleAudio(source) {
@@ -115,7 +116,7 @@ export class AudioControls extends LitElement {
         const generation = this.generation;
         const isCaller = source === 'caller';
         const activeProperty = isCaller ? 'callerActive' : 'micActive';
-        this.busy = source;
+        this.busy = !isCaller && this.micActive ? 'mic-stopping' : source;
         this.error = '';
         try {
             if (this[activeProperty]) {
@@ -123,8 +124,15 @@ export class AudioControls extends LitElement {
                     const result = await capture.stopMacosSystemAudio();
                     if (!result.success) throw new Error(result.error);
                 } else {
-                    stopMicrophone();
-                    this.insertVoiceQuestion();
+                    try {
+                        await stopMicrophone({ flush: true });
+                        if (generation === this.generation) await api.finishMicrophone();
+                    } finally {
+                        if (generation === this.generation && !this.insertVoiceQuestion()) {
+                            this.error = 'No speech was transcribed. Check your input in System Settings → Sound.';
+                        }
+                        this.micActive = false;
+                    }
                 }
                 this[activeProperty] = false;
             } else {
@@ -169,6 +177,11 @@ export class AudioControls extends LitElement {
     }
 
     render() {
+        const status = {
+            caller: 'Updating caller audio…',
+            mic: 'Starting microphone…',
+            'mic-stopping': 'Finishing dictation…',
+        }[this.busy];
         return html`
             <div class="controls" aria-label="Audio controls">
                 <button type="button" aria-pressed=${String(this.callerActive)} ?disabled=${!!this.busy}
@@ -186,7 +199,7 @@ export class AudioControls extends LitElement {
                     Hide Ask <kbd>⌃↵</kbd>
                 </button>
             </div>
-            ${this.busy ? html`<p class="status" role="status">${this.busy === 'caller' ? 'Updating caller audio…' : 'Updating microphone…'}</p>` : ''}
+            ${status ? html`<p class="status" role="status">${status}</p>` : ''}
             ${this.callerText ? html`<p class="caption"><strong>Caller</strong> ${this.callerText}</p>` : ''}
             ${this.micText ? html`<p class="caption"><strong>You</strong> ${this.micText}</p>` : ''}
             ${this.error ? html`<p class="error" role="alert">${this.error}</p>` : ''}

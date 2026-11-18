@@ -110,6 +110,10 @@ module.exports = {
       const header = require('../window/windowManager').windowPool.get('header');
       if (event.sender === header?.webContents) return listenService.endAskAudio();
     });
+    ipcMain.handle('ask:finishMicrophone', event => {
+      const header = require('../window/windowManager').windowPool.get('header');
+      if (event.sender === header?.webContents) return listenService.finishAskMicrophone();
+    });
     
     // Listen
     ipcMain.handle('listen:sendMicAudio', async (event, { data, mimeType }) => await listenService.handleSendMicAudioContent(data, mimeType));

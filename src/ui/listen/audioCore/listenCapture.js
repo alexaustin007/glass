@@ -41,6 +41,7 @@ let micMediaStream = null;
 let audioContext = null;
 let audioProcessor = null;
 let microphoneGeneration = 0;
+let flushMicrophone = null;
 let systemAudioContext = null;
 let systemAudioProcessor = null;
 
@@ -299,45 +300,51 @@ async function setupMicProcessing(micStream) {
     const micAudioContext = new AudioContext({ sampleRate: SAMPLE_RATE });
     await micAudioContext.resume(); 
     const micSource = micAudioContext.createMediaStreamSource(micStream);
-    const micProcessor = micAudioContext.createScriptProcessor(BUFFER_SIZE, 1, 1);
+    const micProcessor = micAudioContext.createScriptProcessor(1024, 1, 1);
 
-    let audioBuffer = [];
+    const audioBuffer = [];
     const samplesPerChunk = SAMPLE_RATE * AUDIO_CHUNK_DURATION;
+    const pendingSends = new Set();
+    let sendError;
+
+    const sendChunk = samples => {
+        let chunk = new Float32Array(samples);
+        const latest = systemAudioBuffer.at(-1);
+        if (latest && Date.now() - latest.timestamp < 500 && chunk.length === samplesPerChunk) {
+            chunk = runAecSync(chunk, base64ToFloat32Array(latest.data));
+        }
+
+        const pcm = convertFloat32ToInt16(chunk);
+        const send = window.api.listenCapture.sendMicAudioContent({
+            data: arrayBufferToBase64(pcm.buffer),
+            mimeType: 'audio/pcm;rate=24000',
+        }).then(result => {
+            if (!result?.success) throw new Error(result?.error || 'Could not send microphone audio to transcription.');
+        }).catch(error => { sendError = error; });
+        pendingSends.add(send);
+        void send.then(() => pendingSends.delete(send));
+    };
 
     micProcessor.onaudioprocess = (e) => {
         const inputData = e.inputBuffer.getChannelData(0);
         audioBuffer.push(...inputData);
-        // console.log('🎤 micProcessor.onaudioprocess');
-
-        // samplesPerChunk(=2400) 만큼 모이면 전송
         while (audioBuffer.length >= samplesPerChunk) {
-            let chunk = audioBuffer.splice(0, samplesPerChunk);
-            let processedChunk = new Float32Array(chunk); // 기본값
-
-            // ───────────────── WASM AEC ─────────────────
-            const latest = systemAudioBuffer.at(-1);
-            if (latest && Date.now() - latest.timestamp < 500) {
-                const sysF32 = base64ToFloat32Array(latest.data);
-
-                // **음성 구간일 때만 런**
-                processedChunk = runAecSync(new Float32Array(chunk), sysF32);
-                // console.log('🔊 Applied WASM-AEC (speex)');
-            }
-
-            const pcm16 = convertFloat32ToInt16(processedChunk);
-            const b64 = arrayBufferToBase64(pcm16.buffer);
-
-            window.api.listenCapture.sendMicAudioContent({
-                data: b64,
-                mimeType: 'audio/pcm;rate=24000',
-            });
+            sendChunk(audioBuffer.splice(0, samplesPerChunk));
         }
     };
 
     micSource.connect(micProcessor);
     micProcessor.connect(micAudioContext.destination);
 
-    return { context: micAudioContext, processor: micProcessor };
+    return {
+        context: micAudioContext,
+        processor: micProcessor,
+        async flush() {
+            if (audioBuffer.length) sendChunk(audioBuffer.splice(0));
+            await Promise.all(pendingSends);
+            if (sendError) throw sendError;
+        },
+    };
 }
 
 async function startMicrophone() {
@@ -353,7 +360,7 @@ async function startMicrophone() {
 
     micMediaStream = stream;
     try {
-        const { context, processor } = await setupMicProcessing(stream);
+        const { context, processor, flush } = await setupMicProcessing(stream);
         if (generation !== microphoneGeneration) {
             processor.disconnect();
             await context.close();
@@ -361,6 +368,7 @@ async function startMicrophone() {
         }
         audioContext = context;
         audioProcessor = processor;
+        flushMicrophone = flush;
         return true;
     } catch (error) {
         if (generation === microphoneGeneration) stopMicrophone();
@@ -368,7 +376,9 @@ async function startMicrophone() {
     }
 }
 
-function stopMicrophone() {
+function stopMicrophone({ flush = false } = {}) {
+    const finalize = flushMicrophone;
+    flushMicrophone = null;
     microphoneGeneration++;
     if (audioProcessor) {
         audioProcessor.onaudioprocess = null;
@@ -383,6 +393,7 @@ function stopMicrophone() {
         micMediaStream.getTracks().forEach(track => track.stop());
         micMediaStream = null;
     }
+    if (flush) return finalize?.();
 }
 
 function setupLinuxMicProcessing(micStream) {

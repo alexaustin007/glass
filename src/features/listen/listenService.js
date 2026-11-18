@@ -138,6 +138,11 @@ class ListenService {
         return session.closing;
     }
 
+    async finishAskMicrophone() {
+        if (!this.askAudioSession || this.askAudioSession.closing) return;
+        await this.sttService.finishMicrophoneInput();
+    }
+
     async handleTranscriptionComplete(speaker, text) {
         console.log(`[ListenService] Transcription complete: ${speaker} - ${text}`);
         

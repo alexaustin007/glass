@@ -1,8 +1,7 @@
-let spawn, path, EventEmitter;
+let execFile, EventEmitter;
 
 if (typeof window === 'undefined') {
-    spawn = require('child_process').spawn;
-    path = require('path');
+    execFile = require('node:child_process').execFile;
     EventEmitter = require('events').EventEmitter;
 } else {
     class DummyEventEmitter {
@@ -20,6 +19,7 @@ class WhisperSTTSession extends EventEmitter {
         this.whisperService = whisperService;
         this.sessionId = sessionId || `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
         this.process = null;
+        this.processing = null;
         this.isRunning = false;
         this.audioBuffer = Buffer.alloc(0);
         this.processingInterval = null;
@@ -40,83 +40,59 @@ class WhisperSTTSession extends EventEmitter {
     }
 
     startProcessingLoop() {
-        this.processingInterval = setInterval(async () => {
-            const minBufferSize = 16000 * 2 * 0.15;
-            if (this.audioBuffer.length >= minBufferSize && !this.process) {
-                console.log(`[WhisperSTT-${this.sessionId}] Processing audio chunk, buffer size: ${this.audioBuffer.length}`);
-                await this.processAudioChunk();
+        this.processingInterval = setInterval(() => {
+            const minBufferSize = 24000 * 2 * 0.15;
+            if (this.audioBuffer.length >= minBufferSize) {
+                this.processAudioChunk().catch(error => this.emit('error', error));
             }
         }, 1500);
     }
 
-    async processAudioChunk() {
-        if (!this.isRunning || this.audioBuffer.length === 0) return;
+    processAudioChunk() {
+        if (this.processing) return this.processing;
+        if (!this.isRunning || this.audioBuffer.length === 0) return Promise.resolve();
 
         const audioData = this.audioBuffer;
         this.audioBuffer = Buffer.alloc(0);
+        this.processing = this.transcribe(audioData).finally(() => { this.processing = null; });
+        return this.processing;
+    }
 
+    async transcribe(audioData) {
+        const tempFile = await this.whisperService.saveAudioToTemp(audioData, this.sessionId, 24000);
         try {
-            const tempFile = await this.whisperService.saveAudioToTemp(audioData, this.sessionId, 24000);
-            
-            if (!tempFile || typeof tempFile !== 'string') {
-                console.error('[WhisperSTT] Invalid temp file path:', tempFile);
-                return;
-            }
-            
             const whisperPath = await this.whisperService.getWhisperPath();
             const modelPath = await this.whisperService.getModelPath(this.model);
+            if (!this.isRunning) return;
 
-            if (!whisperPath || !modelPath) {
-                console.error('[WhisperSTT] Invalid whisper or model path:', { whisperPath, modelPath });
-                return;
+            const output = await new Promise((resolve, reject) => {
+                this.process = execFile(whisperPath, [
+                    '-m', modelPath, '-f', tempFile, '--no-timestamps', '--language', 'auto', '--threads', '4',
+                ], { timeout: 30000 }, (error, stdout) => {
+                    if (error) reject(new Error('Whisper could not transcribe the recording.'));
+                    else resolve(stdout);
+                });
+            });
+
+            const text = output.trim();
+            if (this.isRunning && text && text !== this.lastTranscription) {
+                this.lastTranscription = text;
+                this.emit('transcription', {
+                    text, timestamp: Date.now(), confidence: 1.0, sessionId: this.sessionId,
+                });
             }
+        } finally {
+            this.process = null;
+            await this.whisperService.cleanupTempFile(tempFile);
+        }
+    }
 
-            this.process = spawn(whisperPath, [
-                '-m', modelPath,
-                '-f', tempFile,
-                '--no-timestamps',
-                '--output-txt',
-                '--output-json',
-                '--language', 'auto',
-                '--threads', '4'
-            ]);
-
-            let output = '';
-            let errorOutput = '';
-
-            this.process.stdout.on('data', (data) => {
-                output += data.toString();
-            });
-
-            this.process.stderr.on('data', (data) => {
-                errorOutput += data.toString();
-            });
-
-            this.process.on('close', async (code) => {
-                this.process = null;
-                
-                if (code === 0 && output.trim()) {
-                    const transcription = output.trim();
-                    if (transcription && transcription !== this.lastTranscription) {
-                        this.lastTranscription = transcription;
-                        console.log(`[WhisperSTT-${this.sessionId}] Transcription: "${transcription}"`);
-                        this.emit('transcription', {
-                            text: transcription,
-                            timestamp: Date.now(),
-                            confidence: 1.0,
-                            sessionId: this.sessionId
-                        });
-                    }
-                } else if (errorOutput) {
-                    console.error(`[WhisperSTT-${this.sessionId}] Process error:`, errorOutput);
-                }
-
-                await this.whisperService.cleanupTempFile(tempFile);
-            });
-
-        } catch (error) {
-            console.error('[WhisperSTT] Processing error:', error);
-            this.emit('error', error);
+    async flush() {
+        try {
+            await this.processing;
+            await this.processAudioChunk();
+        } finally {
+            this.lastTranscription = '';
         }
     }
 
@@ -162,10 +138,9 @@ class WhisperSTTSession extends EventEmitter {
             this.processingInterval = null;
         }
 
-        if (this.process) {
-            this.process.kill('SIGTERM');
-            this.process = null;
-        }
+        this.process?.kill('SIGTERM');
+        await this.processing?.catch(() => {});
+        this.audioBuffer = Buffer.alloc(0);
 
         this.removeAllListeners();
     }
