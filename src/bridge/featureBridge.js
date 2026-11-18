@@ -83,17 +83,23 @@ module.exports = {
       askService.sendMessage(userPrompt, [], { includeScreenshot: includeScreenshot !== false }));
     ipcMain.handle('ask:sendQuestionFromSummary', async (event, userPrompt) => await askService.sendMessage(userPrompt));
     ipcMain.handle('ask:toggleAskButton', async () => await askService.toggleAskButton());
+    ipcMain.handle('ask:toggleCallerFromToolbar', event => {
+      const header = require('../window/windowManager').windowPool.get('header');
+      if (event.sender !== header?.webContents) return;
+      askService.setPanelVisible(true);
+      header.webContents.send('ask:audioShortcut', 'caller');
+    });
     ipcMain.handle('ask:closeAskWindow',  async () => await askService.closeAskWindow());
     ipcMain.handle('ask:beginAudio', event => {
-      const askWindow = require('../window/windowManager').windowPool.get('ask');
-      if (!askWindow?.isVisible() || event.sender !== askWindow.webContents) {
+      const header = require('../window/windowManager').windowPool.get('header');
+      if (!header?.isVisible() || !askService.isPanelVisible() || event.sender !== header.webContents) {
         throw new Error('Open the Ask panel to use its audio controls.');
       }
       return listenService.beginAskAudio();
     });
     ipcMain.handle('ask:endAudio', event => {
-      const askWindow = require('../window/windowManager').windowPool.get('ask');
-      if (event.sender === askWindow?.webContents) return listenService.endAskAudio();
+      const header = require('../window/windowManager').windowPool.get('header');
+      if (event.sender === header?.webContents) return listenService.endAskAudio();
     });
     
     // Listen

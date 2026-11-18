@@ -2,6 +2,7 @@ import './MainHeader.js';
 import './ApiKeyHeader.js';
 import './PermissionHeader.js';
 import './WelcomeHeader.js';
+import '../ask/AskView.js';
 
 class HeaderTransitionManager {
     constructor() {
@@ -11,6 +12,26 @@ class HeaderTransitionManager {
         this.apiKeyHeader         = null;
         this.mainHeader            = null;
         this.permissionHeader      = null;
+        this.overlay = document.getElementById('glass-overlay');
+        this.askPanel = document.getElementById('ask-panel');
+        this.headerSize = { width: 353, height: 47 };
+
+        if (window.api) {
+            this.askPanel.addEventListener('caller-audio-state', event => {
+                if (this.mainHeader) this.mainHeader.callerListening = event.detail;
+            });
+            window.api.askView.onAskStateUpdate((_, { isVisible }) => {
+                if (isVisible === !this.askPanel.hidden) return;
+                this.askPanel.hidden = !isVisible;
+                this.overlay.classList.toggle('expanded', isVisible);
+                this.applyWindowSize();
+                if (isVisible) this.askPanel.firstElementChild.focusTextInput();
+            });
+            const resizeObserver = new ResizeObserver(() => {
+                if (!this.askPanel.hidden) this.applyWindowSize();
+            });
+            resizeObserver.observe(this.askPanel);
+        }
 
         /**
          * only one header window is allowed
@@ -229,27 +250,38 @@ class HeaderTransitionManager {
     async _resizeForMain() {
         if (!window.api) return;
         console.log('[HeaderController] _resizeForMain: Resizing window to 353x47');
-        return window.api.headerController.resizeHeaderWindow({ width: 353, height: 47 }).catch(() => {});
+        return this.setHeaderSize(353, 47);
     }
 
     async _resizeForApiKey(height = 370) {
         if (!window.api) return;
         console.log(`[HeaderController] _resizeForApiKey: Resizing window to 456x${height}`);
-        return window.api.headerController.resizeHeaderWindow({ width: 456, height: height }).catch(() => {});
+        return this.setHeaderSize(456, height);
     }
 
     async _resizeForPermissionHeader(height) {
         if (!window.api) return;
         const finalHeight = height || 220;
-        return window.api.headerController.resizeHeaderWindow({ width: 285, height: finalHeight })
-            .catch(() => {});
+        return this.setHeaderSize(285, finalHeight);
     }
 
     async _resizeForWelcome() {
         if (!window.api) return;
         console.log('[HeaderController] _resizeForWelcome: Resizing window to 456x370');
-        return window.api.headerController.resizeHeaderWindow({ width: 456, height: 364 })
-            .catch(() => {});
+        return this.setHeaderSize(456, 400);
+    }
+
+    setHeaderSize(width, height) {
+        this.headerSize = { width, height };
+        return this.applyWindowSize();
+    }
+
+    applyWindowSize() {
+        const { width, height } = this.headerSize;
+        const totalHeight = height + (this.askPanel.hidden ? 0 : this.askPanel.offsetHeight);
+        if (this.lastSize?.width === width && this.lastSize?.height === totalHeight) return;
+        this.lastSize = { width, height: totalHeight };
+        return window.api.headerController.resizeHeaderWindow({ width, height: totalHeight }).catch(console.error);
     }
 
     async checkPermissions() {

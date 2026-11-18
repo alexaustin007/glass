@@ -56,7 +56,7 @@ class WhisperSTTSession extends EventEmitter {
         this.audioBuffer = Buffer.alloc(0);
 
         try {
-            const tempFile = await this.whisperService.saveAudioToTemp(audioData, this.sessionId);
+            const tempFile = await this.whisperService.saveAudioToTemp(audioData, this.sessionId, 24000);
             
             if (!tempFile || typeof tempFile !== 'string') {
                 console.error('[WhisperSTT] Invalid temp file path:', tempFile);
@@ -78,8 +78,7 @@ class WhisperSTTSession extends EventEmitter {
                 '--output-txt',
                 '--output-json',
                 '--language', 'auto',
-                '--threads', '4',
-                '--print-progress', 'false'
+                '--threads', '4'
             ]);
 
             let output = '';

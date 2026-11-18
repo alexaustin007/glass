@@ -89,9 +89,9 @@ npm run setup
 
 `Ctrl/Cmd + Enter` : show or hide the Ask panel. On Mac, both `Cmd + Enter` and `Ctrl + Enter` work with the default shortcuts.
 
-`Cmd + Shift + L` (Mac): start or stop transcribing system audio in Ask. Use **Ask about caller** to answer the latest caption in the same panel.
+`Ctrl + L` (Mac): start or stop transcribing system audio in Ask. Use **Ask about caller** to answer the latest caption in the same panel.
 
-`Cmd + Shift + M` (Mac): start or stop mic dictation. When you stop, the captured text goes into the question box for you to edit and submit. Hiding Ask stops both audio inputs.
+`Ctrl + M` (Mac): start or stop mic dictation. When you stop, the captured text goes into the question box for you to edit and submit. Hiding Ask stops both audio inputs.
 
 `Ctrl/Cmd + Arrows` : move main window position
 

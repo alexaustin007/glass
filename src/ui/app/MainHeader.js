@@ -5,6 +5,7 @@ export class MainHeader extends LitElement {
         isTogglingSession: { type: Boolean, state: true },
         shortcuts: { type: Object, state: true },
         listenSessionStatus: { type: String, state: true },
+        callerListening: { type: Boolean, state: true },
     };
 
     static styles = css`
@@ -78,6 +79,11 @@ export class MainHeader extends LitElement {
             -webkit-mask-composite: destination-out;
             mask-composite: exclude;
             pointer-events: none;
+        }
+
+        :host-context(.expanded) .header::before,
+        :host-context(.expanded) .header::after {
+            display: none;
         }
 
         .listen-button {
@@ -533,6 +539,10 @@ export class MainHeader extends LitElement {
 
     async _handleListenClick() {
         if (this.wasJustDragged) return;
+        if (window.api?.platform.isMacOS) {
+            await window.api.mainHeader.toggleCallerFromToolbar();
+            return;
+        }
         if (this.isTogglingSession) {
             return;
         }
@@ -599,7 +609,9 @@ export class MainHeader extends LitElement {
     }
 
     render() {
-        const listenButtonText = this._getListenButtonText(this.listenSessionStatus);
+        const listenButtonText = window.api?.platform.isMacOS
+            ? (this.callerListening ? 'Stop' : 'Listen')
+            : this._getListenButtonText(this.listenSessionStatus);
     
         const buttonClasses = {
             active: listenButtonText === 'Stop',

@@ -195,12 +195,13 @@ class SttService {
                     
                     if (!isNoise && finalText.length > 2) {
                         this.debounceMyCompletion(finalText);
+                        const isAsk = this.getCaptureWindowName?.() === 'header';
                         
                         this.sendToRenderer('stt-update', {
                             speaker: 'Me',
-                            text: finalText,
-                            isPartial: false,
-                            isFinal: true,
+                            text: isAsk ? this.myCompletionBuffer : finalText,
+                            isPartial: isAsk,
+                            isFinal: !isAsk,
                             timestamp: Date.now(),
                         });
                     } else {
@@ -337,12 +338,13 @@ class SttService {
                     // Only process if it's not noise, not a false positive, and has meaningful content
                     if (!isNoise && finalText.length > 2) {
                         this.debounceTheirCompletion(finalText);
+                        const isAsk = this.getCaptureWindowName?.() === 'header';
                         
                         this.sendToRenderer('stt-update', {
                             speaker: 'Them',
-                            text: finalText,
-                            isPartial: false,
-                            isFinal: true,
+                            text: isAsk ? this.theirCompletionBuffer : finalText,
+                            isPartial: isAsk,
+                            isFinal: !isAsk,
                             timestamp: Date.now(),
                         });
                     } else {

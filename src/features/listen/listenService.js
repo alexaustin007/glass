@@ -25,7 +25,7 @@ class ListenService {
                 if (this.askAudioSession) return;
                 this.handleTranscriptionComplete(speaker, text);
             },
-            getCaptureWindowName: () => this.askAudioSession ? 'ask' : 'listen',
+            getCaptureWindowName: () => this.askAudioSession ? 'header' : 'listen',
             onStatusUpdate: (status) => {
                 this.sendToRenderer('update-status', status);
             }

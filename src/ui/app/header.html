@@ -11,10 +11,19 @@
                 overflow: hidden;
                 background: transparent;
             }
+            #glass-overlay.expanded {
+                background: rgba(11, 13, 17, 0.88);
+                border-radius: 13px;
+                outline: 1px solid rgba(255, 255, 255, 0.16);
+                outline-offset: -1px;
+                overflow: hidden;
+            }
         </style>
     </head>
     <body>
-        <div id="header-container" tabindex="0" style="outline: none;">
+        <div id="glass-overlay">
+            <div id="header-container" tabindex="0" style="outline: none;"></div>
+            <div id="ask-panel" hidden><ask-view embedded></ask-view></div>
         </div>
 
         <script type="module" src="../../../public/build/header.js"></script>

@@ -10,10 +10,22 @@ class ShortcutsService {
         this.mouseEventsIgnored = false;
         this.windowPool = null;
         this.allWindowVisibility = true;
+        this.focusedShortcuts = new Map();
     }
 
     initialize(windowPool) {
         this.windowPool = windowPool;
+        const header = windowPool.get('header');
+        header.webContents.on('before-input-event', (event, input) => {
+            if (input.type !== 'keyDown' || input.isAutoRepeat || input.isComposing) return;
+            const key = /^Key[A-Z]$/.test(input.code) ? input.code.slice(3) : input.key;
+            const accelerator = [input.meta && 'Cmd', input.control && 'Ctrl', input.alt && 'Alt', input.shift && 'Shift', key]
+                .filter(Boolean).join('+').toLowerCase();
+            const callback = this.focusedShortcuts.get(accelerator);
+            if (!callback) return;
+            event.preventDefault();
+            callback();
+        });
         internalBridge.on('reregister-shortcuts', () => {
             console.log('[ShortcutsService] Reregistering shortcuts due to header state change.');
             this.registerShortcuts();
@@ -65,8 +77,8 @@ class ShortcutsService {
             moveRight: isMac ? 'Cmd+Right' : 'Ctrl+Right',
             toggleVisibility: isMac ? 'Cmd+\\' : 'Ctrl+\\',
             toggleClickThrough: isMac ? 'Cmd+M' : 'Ctrl+M',
-            nextStep: isMac ? 'Cmd+Enter' : 'Ctrl+Enter',
-            ...(isMac ? { toggleCallerAudio: 'Cmd+Shift+L', toggleMicrophone: 'Cmd+Shift+M' } : {}),
+            nextStep: 'Ctrl+Enter',
+            ...(isMac ? { toggleCallerAudio: 'Ctrl+L', toggleMicrophone: 'Ctrl+M' } : {}),
             manualScreenshot: isMac ? 'Cmd+Shift+S' : 'Ctrl+Shift+S',
             previousResponse: isMac ? 'Cmd+[' : 'Ctrl+[',
             nextResponse: isMac ? 'Cmd+]' : 'Ctrl+]',
@@ -92,8 +104,9 @@ class ShortcutsService {
 
         const defaults = this.getDefaultKeybinds();
         let needsUpdate = false;
+        const previousMacDefaults = { nextStep: 'Cmd+Enter', toggleCallerAudio: 'Cmd+Shift+L', toggleMicrophone: 'Cmd+Shift+M' };
         for (const action in defaults) {
-            if (!keybinds[action]) {
+            if (!keybinds[action] || (process.platform === 'darwin' && keybinds[action] === previousMacDefaults[action])) {
                 keybinds[action] = defaults[action];
                 needsUpdate = true;
             }
@@ -143,6 +156,7 @@ class ShortcutsService {
         }
         const keybinds = await this.loadKeybinds();
         globalShortcut.unregisterAll();
+        this.focusedShortcuts.clear();
         
         const header = this.windowPool.get('header');
         const mainWindow = header;
@@ -164,15 +178,14 @@ class ShortcutsService {
         const toggleAsk = async () => {
             if (!this.allWindowVisibility) {
                 await this.toggleAllWindowsVisibility();
-                if (this.windowPool.get('ask')?.isVisible()) return;
+                if (askService.isPanelVisible()) return;
             }
             askService.toggleAskButton();
         };
         const toggleAudio = source => {
-            const askWindow = this.windowPool.get('ask');
-            if (!this.allWindowVisibility || !askWindow || askWindow.isDestroyed()) return;
-            if (!askWindow.isVisible()) askService.toggleAskButton();
-            askWindow.webContents.send('ask:audioShortcut', source);
+            if (!this.allWindowVisibility || !header || header.isDestroyed()) return;
+            if (!askService.isPanelVisible()) askService.setPanelVisible(true);
+            header.webContents.send('ask:audioShortcut', source);
         };
 
         const register = (accelerator, callback) => {
@@ -185,11 +198,28 @@ class ShortcutsService {
             }
         };
 
-        if (keybinds.nextStep) register(keybinds.nextStep, toggleAsk);
-        if (process.platform === 'darwin' && keybinds.nextStep === 'Cmd+Enter' &&
-            !Object.values(keybinds).some(key => /^(Ctrl|Control)\+(Enter|Return)$/i.test(key))) {
-            register('Ctrl+Enter', toggleAsk);
-        }
+        const registerOverlay = (action, callback, alias) => {
+            let previous = -Infinity;
+            const invoke = () => {
+                const now = performance.now();
+                if (now - previous < 150) return;
+                previous = now;
+                Promise.resolve(callback()).catch(console.error);
+            };
+            const accelerator = keybinds[action];
+            if (!accelerator) return;
+            for (const shortcut of [accelerator, alias].filter(Boolean)) {
+                if (shortcut === alias && shortcut !== accelerator && Object.values(keybinds).includes(shortcut)) continue;
+                const terms = shortcut.toLowerCase().split('+');
+                const key = terms.pop();
+                const modifiers = ['cmd', 'ctrl', 'alt', 'shift'].filter(value => terms.includes(value));
+                this.focusedShortcuts.set([...modifiers, key === 'return' ? 'enter' : key].join('+'), invoke);
+                register(shortcut, invoke);
+            }
+        };
+
+        const isMac = process.platform === 'darwin';
+        registerOverlay('nextStep', toggleAsk, isMac && 'Cmd+Enter');
 
         if (registerOnlyToggleVisibility) {
             if (keybinds.toggleVisibility) {
@@ -199,8 +229,11 @@ class ShortcutsService {
         }
 
         // --- Hardcoded shortcuts ---
-        const isMac = process.platform === 'darwin';
         const modifier = isMac ? 'Cmd' : 'Ctrl';
+        if (isMac) {
+            registerOverlay('toggleCallerAudio', () => toggleAudio('caller'), 'Cmd+Shift+L');
+            registerOverlay('toggleMicrophone', () => toggleAudio('mic'), 'Cmd+Shift+M');
+        }
         
         // Monitor switching
         const displays = screen.getAllDisplays();
@@ -227,8 +260,6 @@ class ShortcutsService {
             if (keybinds.toggleVisibility) {
                 globalShortcut.register(keybinds.toggleVisibility, () => this.toggleAllWindowsVisibility());
             }
-            if (keybinds.toggleCallerAudio) register(keybinds.toggleCallerAudio, () => toggleAudio('caller'));
-            if (keybinds.toggleMicrophone) register(keybinds.toggleMicrophone, () => toggleAudio('mic'));
             return;
         }
 
@@ -241,25 +272,17 @@ class ShortcutsService {
                 case 'toggleVisibility':
                     callback = () => this.toggleAllWindowsVisibility();
                     break;
-                case 'toggleCallerAudio':
-                    callback = () => toggleAudio('caller');
-                    break;
-                case 'toggleMicrophone':
-                    callback = () => toggleAudio('mic');
-                    break;
                 case 'scrollUp':
                     callback = () => {
-                        const askWindow = this.windowPool.get('ask');
-                        if (askWindow && !askWindow.isDestroyed() && askWindow.isVisible()) {
-                            askWindow.webContents.send('scroll-response-up');
+                        if (header?.isVisible() && askService.isPanelVisible()) {
+                            header.webContents.send('ask:scrollResponseUp');
                         }
                     };
                     break;
                 case 'scrollDown':
                     callback = () => {
-                        const askWindow = this.windowPool.get('ask');
-                        if (askWindow && !askWindow.isDestroyed() && askWindow.isVisible()) {
-                            askWindow.webContents.send('scroll-response-down');
+                        if (header?.isVisible() && askService.isPanelVisible()) {
+                            header.webContents.send('ask:scrollResponseDown');
                         }
                     };
                     break;

@@ -7,6 +7,7 @@ const shortcutsService = require('../features/shortcuts/shortcutsService');
 const internalBridge = require('../bridge/internalBridge');
 const permissionRepository = require('../features/common/repositories/permission');
 const listenService = require('../features/listen/listenService');
+const askService = require('../features/ask/askService');
 
 /* ────────────────[ GLASS BYPASS ]─────────────── */
 let liquidGlass;
@@ -47,12 +48,8 @@ function updateChildWindowLayouts(animated = true) {
 
     const visibleWindows = {};
     const listenWin = windowPool.get('listen');
-    const askWin = windowPool.get('ask');
     if (listenWin && !listenWin.isDestroyed() && listenWin.isVisible()) {
         visibleWindows.listen = true;
-    }
-    if (askWin && !askWin.isDestroyed() && askWin.isVisible()) {
-        visibleWindows.ask = true;
     }
 
     if (Object.keys(visibleWindows).length === 0) return;
@@ -140,12 +137,8 @@ function setupWindowController(windowPool, layoutManager, movementManager) {
             const futureHeaderBounds = { ...header.getBounds(), ...newHeaderPosition };
             const visibleWindows = {};
             const listenWin = windowPool.get('listen');
-            const askWin = windowPool.get('ask');
             if (listenWin && !listenWin.isDestroyed() && listenWin.isVisible()) {
                 visibleWindows.listen = true;
-            }
-            if (askWin && !askWin.isDestroyed() && askWin.isVisible()) {
-                visibleWindows.ask = true;
             }
 
             const newChildLayout = layoutManager.calculateFeatureWindowLayout(visibleWindows, futureHeaderBounds);
@@ -157,19 +150,8 @@ function setupWindowController(windowPool, layoutManager, movementManager) {
 
     internalBridge.on('window:resizeHeaderWindow', ({ width, height }) => {
         const header = windowPool.get('header');
-        if (!header || movementManager.isAnimating) return;
-
-        const newHeaderBounds = layoutManager.calculateHeaderResize(header, { width, height });
-        
-        const wasResizable = header.isResizable();
-        if (!wasResizable) header.setResizable(true);
-
-        movementManager.animateWindowBounds(header, newHeaderBounds, {
-            onComplete: () => {
-                if (!wasResizable) header.setResizable(false);
-                updateChildWindowLayouts(true);
-            }
-        });
+        if (!header || header.isDestroyed()) return;
+        header.setBounds(layoutManager.calculateHeaderResize(header, { width, height }));
     });
     internalBridge.on('window:headerAnimationFinished', (state) => {
         const header = windowPool.get('header');
@@ -213,6 +195,12 @@ function setupWindowController(windowPool, layoutManager, movementManager) {
             });
         }
     });
+
+    internalBridge.on('ask:pauseAudio', () => {
+        const header = windowPool.get('header');
+        if (header && !header.isDestroyed()) header.webContents.send('ask:audioPaused');
+        Promise.resolve(listenService.endAskAudio()).catch(console.error);
+    });
 }
 
 function changeAllWindowsVisibility(windowPool, targetVisibility) {
@@ -255,7 +243,7 @@ function changeAllWindowsVisibility(windowPool, targetVisibility) {
  * @param {Map<string, BrowserWindow>} windowPool
  * @param {WindowLayoutManager} layoutManager 
  * @param {SmoothMovementManager} movementManager
- * @param {'listen' | 'ask' | 'settings' | 'shortcut-settings'} name 
+ * @param {'listen' | 'settings' | 'shortcut-settings'} name
  * @param {boolean} shouldBeVisible 
  */
 async function handleWindowVisibilityRequest(windowPool, layoutManager, movementManager, name, shouldBeVisible) {
@@ -351,56 +339,19 @@ async function handleWindowVisibilityRequest(windowPool, layoutManager, movement
         return;
     }
 
-    if (name === 'listen' || name === 'ask') {
-        const win = windowPool.get(name);
-        const otherName = name === 'listen' ? 'ask' : 'listen';
-        const otherWin = windowPool.get(otherName);
-        const isOtherWinVisible = otherWin && !otherWin.isDestroyed() && otherWin.isVisible();
-        
-        const ANIM_OFFSET_X = 50;
-        const ANIM_OFFSET_Y = 20;
-
-        const finalVisibility = {
-            listen: (name === 'listen' && shouldBeVisible) || (otherName === 'listen' && isOtherWinVisible),
-            ask: (name === 'ask' && shouldBeVisible) || (otherName === 'ask' && isOtherWinVisible),
-        };
-        if (!shouldBeVisible) {
-            finalVisibility[name] = false;
-        }
-
-        const targetLayout = layoutManager.calculateFeatureWindowLayout(finalVisibility);
-
+    if (name === 'listen') {
         if (shouldBeVisible) {
-            if (!win) return;
-            const targetBounds = targetLayout[name];
-            if (!targetBounds) return;
-
-            const startPos = { ...targetBounds };
-            if (name === 'listen') startPos.x -= ANIM_OFFSET_X;
-            else if (name === 'ask') startPos.y -= ANIM_OFFSET_Y;
-
+            const targetLayout = layoutManager.calculateFeatureWindowLayout({ listen: true });
+            if (!targetLayout.listen) return;
             win.setOpacity(0);
-            win.setBounds(startPos);
+            win.setBounds({ ...targetLayout.listen, x: targetLayout.listen.x - 50 });
             win.show();
-
             movementManager.fade(win, { to: 1 });
             movementManager.animateLayout(targetLayout);
-
         } else {
-            if (!win || !win.isVisible()) return;
-
-            const currentBounds = win.getBounds();
-            const targetPos = { ...currentBounds };
-            if (name === 'listen') targetPos.x -= ANIM_OFFSET_X;
-            else if (name === 'ask') targetPos.y -= ANIM_OFFSET_Y;
-
+            const bounds = win.getBounds();
             movementManager.fade(win, { to: 0, onComplete: () => win.hide() });
-            movementManager.animateWindowPosition(win, targetPos);
-            
-            // 다른 창들도 새 레이아웃으로 애니메이션
-            const otherWindowsLayout = { ...targetLayout };
-            delete otherWindowsLayout[name];
-            movementManager.animateLayout(otherWindowsLayout);
+            movementManager.animateWindowPosition(win, { ...bounds, x: bounds.x - 50 });
         }
     }
 }
@@ -490,46 +441,6 @@ function createFeatureWindows(header, namesToCreate) {
                 break;
             }
 
-            // ask
-            case 'ask': {
-                const ask = new BrowserWindow({ ...commonChildOptions, width:600 });
-                const endAudio = () => Promise.resolve(listenService.endAskAudio()).catch(console.error);
-                ask.on('hide', () => {
-                    ask.webContents.send('ask:audioPaused');
-                    endAudio();
-                });
-                ask.on('closed', endAudio);
-                ask.webContents.on('render-process-gone', endAudio);
-                ask.setContentProtection(isContentProtectionOn);
-                ask.setVisibleOnAllWorkspaces(true,{visibleOnFullScreen:true});
-                if (process.platform === 'darwin') {
-                    ask.setWindowButtonVisibility(false);
-                }
-                const askLoadOptions = { query: { view: 'ask' } };
-                if (!shouldUseLiquidGlass) {
-                    ask.loadFile(path.join(__dirname, '../ui/app/content.html'), askLoadOptions);
-                }
-                else {
-                    askLoadOptions.query.glass = 'true';
-                    ask.loadFile(path.join(__dirname, '../ui/app/content.html'), askLoadOptions);
-                    ask.webContents.once('did-finish-load', () => {
-                        const viewId = liquidGlass.addView(ask.getNativeWindowHandle());
-                        if (viewId !== -1) {
-                            liquidGlass.unstable_setVariant(viewId, liquidGlass.GlassMaterialVariant.bubbles);
-                            // liquidGlass.unstable_setScrim(viewId, 1);
-                            // liquidGlass.unstable_setSubdued(viewId, 1);
-                        }
-                    });
-                }
-                
-                // Open DevTools in development
-                if (!app.isPackaged) {
-                    ask.webContents.openDevTools({ mode: 'detach' });
-                }
-                windowPool.set('ask', ask);
-                break;
-            }
-
             // settings
             case 'settings': {
                 const settings = new BrowserWindow({ ...commonChildOptions, width:240, maxHeight:400, parent:undefined });
@@ -610,14 +521,13 @@ function createFeatureWindows(header, namesToCreate) {
         createFeatureWindow(namesToCreate);
     } else {
         createFeatureWindow('listen');
-        createFeatureWindow('ask');
         createFeatureWindow('settings');
         createFeatureWindow('shortcut-settings');
     }
 }
 
 function destroyFeatureWindows() {
-    const featureWindows = ['listen','ask','settings','shortcut-settings'];
+    const featureWindows = ['listen','settings','shortcut-settings'];
     if (settingsHideTimer) {
         clearTimeout(settingsHideTimer);
         settingsHideTimer = null;
@@ -723,11 +633,12 @@ function createWindows() {
     setupIpcHandlers(windowPool, layoutManager);
     setupWindowController(windowPool, layoutManager, movementManager);
 
-    if (currentHeaderState === 'main') {
-        createFeatureWindows(header, ['listen', 'ask', 'settings', 'shortcut-settings']);
-    } else {
-        createFeatureWindows(header, 'ask');
-    }
+    if (currentHeaderState === 'main') createFeatureWindows(header);
+
+    const stopAskAudio = () => Promise.resolve(listenService.endAskAudio()).catch(console.error);
+    header.on('hide', () => internalBridge.emit('ask:pauseAudio'));
+    header.on('closed', stopAskAudio);
+    header.webContents.on('render-process-gone', stopAskAudio);
 
     header.setContentProtection(isContentProtectionOn);
     header.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
@@ -789,13 +700,13 @@ function setupIpcHandlers(windowPool, layoutManager) {
 
 const handleHeaderStateChanged = (state) => {
     console.log(`[WindowManager] Header state changed to: ${state}`);
+    if (currentHeaderState === 'main' && state !== 'main') askService.closeAskWindow();
     currentHeaderState = state;
 
     if (state === 'main') {
         createFeatureWindows(windowPool.get('header'));
     } else {         // 'apikey' | 'permission'
         destroyFeatureWindows();
-        createFeatureWindows(windowPool.get('header'), 'ask');
     }
     internalBridge.emit('reregister-shortcuts');
 };

@@ -16,9 +16,9 @@ export class AudioControls extends LitElement {
 
     static styles = css`
         :host { display: block; flex-shrink: 0; }
-        .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 10px 14px 0; }
+        .controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; padding: 9px 12px 0; }
         button {
-            display: inline-flex; align-items: center; gap: 7px; border-radius: 7px;
+            display: inline-flex; justify-content: space-between; align-items: center; gap: 4px; border-radius: 7px;
             min-height: 30px; padding: 4px 9px; background: rgba(255, 255, 255, .09);
             color: inherit; border: 1px solid rgba(255, 255, 255, .15);
             font: 500 12px -apple-system, BlinkMacSystemFont, sans-serif; cursor: pointer;
@@ -28,7 +28,7 @@ export class AudioControls extends LitElement {
         button:disabled { opacity: .55; cursor: default; }
         button[aria-pressed='true'] { background: rgba(153, 27, 27, .65); border-color: #fca5a5; }
         kbd, .status { color: #d1d5db; font-size: 11px; }
-        .caption, .error { margin: 8px 14px 0; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+        .caption, .error, .status { margin: 8px 12px 0; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
         .caption { max-height: 96px; overflow-y: auto; user-select: text; }
         .error { color: #fecaca; }
     `;
@@ -160,6 +160,14 @@ export class AudioControls extends LitElement {
         return html`<kbd title=${accelerator}>${accelerator.split('+').map(key => shortcutLabels[key] || key).join('')}</kbd>`;
     }
 
+    updated(changes) {
+        if (changes.has('callerActive')) {
+            this.dispatchEvent(new CustomEvent('caller-audio-state', {
+                detail: this.callerActive, bubbles: true, composed: true,
+            }));
+        }
+    }
+
     render() {
         return html`
             <div class="controls" aria-label="Audio controls">
@@ -171,13 +179,14 @@ export class AudioControls extends LitElement {
                     @click=${() => this.toggleAudio('mic')}>
                     ${this.micActive ? 'Stop speaking' : 'Speak'} ${this.renderShortcut('toggleMicrophone')}
                 </button>
-                ${this.callerText ? html`
-                    <button type="button" @click=${() => this.dispatchEvent(new CustomEvent('caller-question', { detail: this.callerText }))}>
-                        Ask about caller
-                    </button>
-                ` : ''}
-                <span class="status" role="status">${this.busy ? 'Updating audio…' : ''}</span>
+                <button type="button" ?disabled=${!this.callerText} @click=${() => this.dispatchEvent(new CustomEvent('caller-question', { detail: this.callerText }))}>
+                    Ask about caller
+                </button>
+                <button type="button" @click=${() => window.api.mainHeader.sendAskButtonClick()}>
+                    Hide Ask <kbd>⌃↵</kbd>
+                </button>
             </div>
+            ${this.busy ? html`<p class="status" role="status">${this.busy === 'caller' ? 'Updating caller audio…' : 'Updating microphone…'}</p>` : ''}
             ${this.callerText ? html`<p class="caption"><strong>Caller</strong> ${this.callerText}</p>` : ''}
             ${this.micText ? html`<p class="caption"><strong>You</strong> ${this.micText}</p>` : ''}
             ${this.error ? html`<p class="error" role="alert">${this.error}</p>` : ''}

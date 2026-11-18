@@ -138,19 +138,27 @@ class AskService {
     }
 
     _broadcastState() {
-        const askWindow = getWindowPool()?.get('ask');
+        const askWindow = getWindowPool()?.get('header');
         if (askWindow && !askWindow.isDestroyed()) {
             askWindow.webContents.send('ask:stateUpdate', this.state);
         }
     }
 
     toggleAskButton() {
-        const askWindow = getWindowPool()?.get('ask');
-        if (!askWindow || askWindow.isDestroyed()) return;
-        this.state.isVisible = !askWindow.isVisible();
+        this.setPanelVisible(!this.state.isVisible);
+    }
+
+    setPanelVisible(visible) {
+        const header = getWindowPool()?.get('header');
+        if (!header || header.isDestroyed()) return;
+        this.state.isVisible = visible;
         this.state.showTextInput = true;
-        internalBridge.emit('window:requestVisibility', { name: 'ask', visible: this.state.isVisible });
+        if (!visible) internalBridge.emit('ask:pauseAudio');
         this._broadcastState();
+    }
+
+    isPanelVisible() {
+        return this.state.isVisible;
     }
 
     async closeAskWindow () {
@@ -167,9 +175,7 @@ class AskService {
                 currentResponse: '',
                 showTextInput  : true,
             };
-            this._broadcastState();
-    
-            internalBridge.emit('window:requestVisibility', { name: 'ask', visible: false });
+            this.setPanelVisible(false);
     
             return { success: true };
         }
@@ -194,9 +200,9 @@ class AskService {
      * @returns {Promise<{success: boolean, response?: string, error?: string}>}
      */
     async sendMessage(userPrompt, conversationHistoryRaw = [], { includeScreenshot = true } = {}) {
-        internalBridge.emit('window:requestVisibility', { name: 'ask', visible: true });
         this.state = {
             ...this.state,
+            isVisible: true,
             isLoading: true,
             isStreaming: false,
             currentQuestion: userPrompt,
@@ -262,7 +268,7 @@ class AskService {
 
             try {
                 const response = await streamingLLM.streamChat(messages);
-                const askWin = getWindowPool()?.get('ask');
+                const askWin = getWindowPool()?.get('header');
 
                 if (!askWin || askWin.isDestroyed()) {
                     console.error("[AskService] Ask window is not available to send stream to.");
@@ -294,7 +300,7 @@ class AskService {
                     ];
 
                     const fallbackResponse = await streamingLLM.streamChat(textOnlyMessages);
-                    const askWin = getWindowPool()?.get('ask');
+                    const askWin = getWindowPool()?.get('header');
 
                     if (!askWin || askWin.isDestroyed()) {
                         console.error("[AskService] Ask window is not available for fallback response.");
@@ -326,7 +332,7 @@ class AskService {
             };
             this._broadcastState();
 
-            const askWin = getWindowPool()?.get('ask');
+            const askWin = getWindowPool()?.get('header');
             if (askWin && !askWin.isDestroyed()) {
                 const streamError = error.message || 'Unknown error occurred';
                 askWin.webContents.send('ask-response-stream-error', { error: streamError });

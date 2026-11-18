@@ -34,6 +34,17 @@ export class AskView extends LitElement {
             animation: slideUp 0.3s cubic-bezier(0.4, 0, 0.6, 1) forwards;
         }
 
+        :host([embedded]) { height: auto; }
+        :host([embedded]) .ask-container {
+            height: auto;
+            border-radius: 0;
+            outline: none;
+            background: transparent;
+        }
+        :host([embedded]) .ask-container::before { display: none; }
+        :host([embedded]) .response-container { max-height: 260px; padding-left: 16px; }
+        :host([embedded]) #textInput { min-width: 0; }
+
         :host(.showing) {
             animation: slideDown 0.35s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
         }
@@ -753,8 +764,6 @@ export class AskView extends LitElement {
 
         this.loadLibraries();
 
-        // --- Resize helpers ---
-        this.isThrottled = false;
     }
 
     connectedCallback() {
@@ -763,17 +772,6 @@ export class AskView extends LitElement {
         console.log('📱 AskView connectedCallback - IPC 이벤트 리스너 설정');
 
         document.addEventListener('keydown', this.handleEscKey);
-
-        this.resizeObserver = new ResizeObserver(entries => {
-            for (const entry of entries) {
-                if (entry.target.localName === 'ask-audio-controls') this.adjustWindowHeightThrottled();
-            }
-        });
-
-        this.updateComplete.then(() => {
-            const controls = this.shadowRoot?.querySelector('ask-audio-controls');
-            if (controls && this.isConnected) this.resizeObserver.observe(controls);
-        });
 
         this.handleQuestionFromAssistant = (event, question) => {
             console.log('AskView: Received question from ListenView:', question);
@@ -812,7 +810,6 @@ export class AskView extends LitElement {
 
     disconnectedCallback() {
         super.disconnectedCallback();
-        this.resizeObserver?.disconnect();
 
         console.log('📱 AskView disconnectedCallback - IPC 이벤트 리스너 제거');
 
@@ -845,15 +842,15 @@ export class AskView extends LitElement {
     async loadLibraries() {
         try {
             if (!window.marked) {
-                await this.loadScript('../../assets/marked-4.3.0.min.js');
+                await this.loadScript('../assets/marked-4.3.0.min.js');
             }
 
             if (!window.hljs) {
-                await this.loadScript('../../assets/highlight-11.9.0.min.js');
+                await this.loadScript('../assets/highlight-11.9.0.min.js');
             }
 
             if (!window.DOMPurify) {
-                await this.loadScript('../../assets/dompurify-3.0.7.min.js');
+                await this.loadScript('../assets/dompurify-3.0.7.min.js');
             }
 
             this.marked = window.marked;
@@ -1020,7 +1017,6 @@ export class AskView extends LitElement {
         this.renderStreamingMarkdown(responseContainer);
 
         // After updating content, recalculate window height
-        this.adjustWindowHeightThrottled();
     }
 
     resetStreamingParser() {
@@ -1323,17 +1319,9 @@ export class AskView extends LitElement {
             this.renderContent();
         }
     
-        if (changedProperties.has('showTextInput') || changedProperties.has('isLoading') || changedProperties.has('currentResponse') || changedProperties.has('requestError')) {
-            this.adjustWindowHeightThrottled();
-        }
-    
         if (changedProperties.has('showTextInput') && this.showTextInput) {
             this.focusTextInput();
         }
-    }
-
-    firstUpdated() {
-        setTimeout(() => this.adjustWindowHeight(), 200);
     }
 
 
@@ -1426,42 +1414,6 @@ export class AskView extends LitElement {
         `;
     }
 
-    // Dynamically resize the BrowserWindow to fit current content
-    adjustWindowHeight() {
-        if (!window.api) return;
-
-        this.updateComplete.then(() => {
-            const headerEl = this.shadowRoot.querySelector('.response-header');
-            const responseEl = this.shadowRoot.querySelector('.response-container');
-            const inputEl = this.shadowRoot.querySelector('.text-input-container');
-            const controlsHeight = this.shadowRoot.querySelector('ask-audio-controls')?.offsetHeight ?? 0;
-            const errorHeight = this.shadowRoot.querySelector('.ask-error')?.offsetHeight ?? 0;
-
-            if (!headerEl || !responseEl) return;
-
-            const headerHeight = headerEl.classList.contains('hidden') ? 0 : headerEl.offsetHeight;
-            const responseHeight = Math.min(400, responseEl.scrollHeight);
-            const inputHeight = (inputEl && !inputEl.classList.contains('hidden')) ? inputEl.offsetHeight : 0;
-
-            const idealHeight = headerHeight + responseHeight + inputHeight + controlsHeight + (errorHeight ? errorHeight + 16 : 0);
-
-            const targetHeight = Math.min(700, idealHeight);
-
-            window.api.askView.adjustWindowHeight("ask", targetHeight);
-
-        }).catch(err => console.error('AskView adjustWindowHeight error:', err));
-    }
-
-    // Throttled wrapper to avoid excessive IPC spam (executes at most once per animation frame)
-    adjustWindowHeightThrottled() {
-        if (this.isThrottled) return;
-
-        this.isThrottled = true;
-        requestAnimationFrame(() => {
-            this.adjustWindowHeight();
-            this.isThrottled = false;
-        });
-    }
 }
 
 customElements.define('ask-view', AskView);

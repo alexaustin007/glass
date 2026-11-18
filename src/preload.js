@@ -116,6 +116,7 @@ contextBridge.exposeInMainWorld('api', {
     // invoke: (channel, ...args) => ipcRenderer.invoke(channel, ...args),
     sendListenButtonClick: (listenButtonText) => ipcRenderer.invoke('listen:changeSession', listenButtonText),
     sendAskButtonClick: () => ipcRenderer.invoke('ask:toggleAskButton'),
+    toggleCallerFromToolbar: () => ipcRenderer.invoke('ask:toggleCallerFromToolbar'),
     sendToggleAllWindowsVisibility: () => ipcRenderer.invoke('shortcut:toggleAllWindowsVisibility'),
     
     // Listeners
@@ -148,7 +149,6 @@ contextBridge.exposeInMainWorld('api', {
   askView: {
     // Window Management
     closeAskWindow: () => ipcRenderer.invoke('ask:closeAskWindow'),
-    adjustWindowHeight: (winName, height) => ipcRenderer.invoke('adjust-window-height', { winName, height }),
     
     // Message Handling
     sendMessage: (text, includeScreenshot) => ipcRenderer.invoke('ask:sendQuestionFromAsk', text, includeScreenshot),
@@ -177,10 +177,10 @@ contextBridge.exposeInMainWorld('api', {
     onShowTextInput: (callback) => ipcRenderer.on('ask:showTextInput', callback),
     removeOnShowTextInput: (callback) => ipcRenderer.removeListener('ask:showTextInput', callback),
     
-    onScrollResponseUp: (callback) => ipcRenderer.on('aks:scrollResponseUp', callback),
-    removeOnScrollResponseUp: (callback) => ipcRenderer.removeListener('aks:scrollResponseUp', callback),
-    onScrollResponseDown: (callback) => ipcRenderer.on('aks:scrollResponseDown', callback),
-    removeOnScrollResponseDown: (callback) => ipcRenderer.removeListener('aks:scrollResponseDown', callback)
+    onScrollResponseUp: (callback) => ipcRenderer.on('ask:scrollResponseUp', callback),
+    removeOnScrollResponseUp: (callback) => ipcRenderer.removeListener('ask:scrollResponseUp', callback),
+    onScrollResponseDown: (callback) => ipcRenderer.on('ask:scrollResponseDown', callback),
+    removeOnScrollResponseDown: (callback) => ipcRenderer.removeListener('ask:scrollResponseDown', callback)
   },
 
   // src/ui/listen/ListenView.js
