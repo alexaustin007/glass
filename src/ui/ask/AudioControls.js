@@ -128,7 +128,7 @@ export class AudioControls extends LitElement {
                 }
                 this[activeProperty] = false;
             } else {
-                await api.beginAudio();
+                await api.beginAudio(source);
                 if (generation !== this.generation) return;
 
                 if (isCaller) {

@@ -90,9 +90,19 @@ module.exports = {
       header.webContents.send('ask:audioShortcut', 'caller');
     });
     ipcMain.handle('ask:closeAskWindow',  async () => await askService.closeAskWindow());
-    ipcMain.handle('ask:beginAudio', event => {
+    ipcMain.handle('ask:beginAudio', async (event, source) => {
       const header = require('../window/windowManager').windowPool.get('header');
-      if (!header?.isVisible() || !askService.isPanelVisible() || event.sender !== header.webContents) {
+      if (event.sender !== header?.webContents || !['caller', 'mic'].includes(source)) {
+        throw new Error('Open the Ask panel to use its audio controls.');
+      }
+      const permissions = await permissionService.checkSystemPermissions();
+      if (source === 'caller' && permissions.screen !== 'granted') {
+        throw new Error('Allow Glass in macOS Screen & System Audio Recording to listen to a caller.');
+      }
+      if (source === 'mic' && permissions.microphone !== 'granted') {
+        throw new Error('Allow Glass to use the microphone in macOS Privacy & Security to speak.');
+      }
+      if (header.isDestroyed() || !header.isVisible() || !askService.isPanelVisible()) {
         throw new Error('Open the Ask panel to use its audio controls.');
       }
       return listenService.beginAskAudio();
