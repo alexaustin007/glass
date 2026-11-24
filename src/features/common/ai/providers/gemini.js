@@ -34,7 +34,7 @@ class GeminiProvider {
  * @param {object} [opts.callbacks] - Event callbacks
  * @returns {Promise<object>} STT session
  */
-async function createSTT({ apiKey, language = 'en', callbacks = {} }) {
+async function createSTT({ apiKey, language = 'en', callbacks = {}, customVocabulary = [] }) {
   const url = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent';
   let socket, connecting, completeFlush;
   let stopped = false;
@@ -51,7 +51,8 @@ async function createSTT({ apiKey, language = 'en', callbacks = {} }) {
       ws.on('open', () => ws.send(JSON.stringify({ setup: {
         model: 'models/gemini-3.5-transcribe-live',
         generationConfig: { responseModalities: ['TEXT'] },
-        inputAudioTranscription: { languageCodes: [language] },
+        inputAudioTranscription: { mode: 'VERBATIM', languageCodes: [language], customVocabulary },
+        realtimeInputConfig: { automaticActivityDetection: { silenceDurationMs: 200 } },
       } })));
       ws.on('message', bytes => {
         const message = JSON.parse(bytes.toString());
@@ -276,6 +277,7 @@ function createStreamingLLM({ apiKey, model = "gemini-2.5-flash", temperature = 
         generationConfig: {
           temperature,
           maxOutputTokens: maxTokens || 8192,
+          ...(config.thinkingBudget !== undefined && { thinkingConfig: { thinkingBudget: config.thinkingBudget } }),
           // Force plain text responses
           responseMimeType: "text/plain",
         },
@@ -323,7 +325,7 @@ function createStreamingLLM({ apiKey, model = "gemini-2.5-flash", temperature = 
                   parts: contentParts,
                 },
               ],
-            })
+            }, { signal: config.signal })
 
             for await (const chunk of result.stream) {
               const chunkText = chunk.text() || ""
@@ -344,7 +346,7 @@ function createStreamingLLM({ apiKey, model = "gemini-2.5-flash", temperature = 
             controller.enqueue(new TextEncoder().encode("data: [DONE]\n\n"))
             controller.close()
           } catch (error) {
-            console.error("[Gemini Provider] Streaming error:", error)
+            if (!config.signal?.aborted) console.error("[Gemini Provider] Streaming failed", error.status || error.name)
             controller.error(error)
           }
         },

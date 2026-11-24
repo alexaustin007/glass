@@ -200,41 +200,7 @@ class HeaderTransitionManager {
             return;
         }
 
-        // Check if permissions were previously completed
-        if (window.api) {
-            try {
-                const permissionsCompleted = await window.api.headerController.checkPermissionsCompleted();
-                if (permissionsCompleted) {
-                    console.log('[HeaderController] Permissions were previously completed, checking current status...');
-                    
-                    // Double check current permission status
-                    const permissionResult = await this.checkPermissions();
-                    if (permissionResult.success) {
-                        // Skip permission setup if already granted
-                        this.transitionToMainHeader();
-                        return;
-                    }
-                    
-                    console.log('[HeaderController] Permissions were revoked, showing setup again');
-                }
-            } catch (error) {
-                console.error('[HeaderController] Error checking permissions completed status:', error);
-            }
-        }
-
-        let initialHeight = 220;
-        if (window.api) {
-            try {
-                const userState = await window.api.common.getCurrentUser();
-                if (userState.mode === 'firebase') {
-                    initialHeight = 280;
-                }
-            } catch (e) {
-                console.error('Could not get user state for resize', e);
-            }
-        }
-
-        await this._resizeForPermissionHeader(initialHeight);
+        await this._resizeForPermissionHeader(220);
         this.ensureHeader('permission');
     }
 
@@ -278,6 +244,8 @@ class HeaderTransitionManager {
 
     applyWindowSize() {
         const { width, height } = this.headerSize;
+        // A long interview answer and a manual Ask response can be open together.
+        this.askPanel.style.maxHeight = `${Math.max(180, window.screen.availHeight - height)}px`;
         const totalHeight = height + (this.askPanel.hidden ? 0 : this.askPanel.offsetHeight);
         if (this.lastSize?.width === width && this.lastSize?.height === totalHeight) return;
         this.lastSize = { width, height: totalHeight };

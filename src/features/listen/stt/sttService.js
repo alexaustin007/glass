@@ -48,13 +48,17 @@ class SttService {
         this.modelInfo = null; 
     }
 
-    setCallbacks({ onTranscriptionComplete, onStatusUpdate, getCaptureWindowName }) {
+    setCallbacks({ onTranscriptionComplete, onCallerInterim, onStatusUpdate, getCaptureWindowName }) {
         this.onTranscriptionComplete = onTranscriptionComplete;
+        this.onCallerInterim = onCallerInterim;
         this.onStatusUpdate = onStatusUpdate;
         this.getCaptureWindowName = getCaptureWindowName;
     }
 
     sendToRenderer(channel, data) {
+        if (channel === 'stt-update' && data.speaker === 'Them' && data.isPartial && data.text) {
+            this.onCallerInterim?.(data.text);
+        }
         const { windowPool } = require('../../../window/windowManager');
         const captureWindow = windowPool?.get(this.getCaptureWindowName?.() ?? 'listen');
         
@@ -413,7 +417,16 @@ class SttService {
             },
         };
         
+        let customVocabulary = [];
+        if (modelInfo.provider === 'gemini' && this.getCaptureWindowName?.() === 'header') {
+            const { app } = require('electron');
+            const file = require('path').join(app.getPath('userData'), 'interview-context.md');
+            const profile = await require('fs/promises').readFile(file, 'utf8').catch(() => '');
+            const terms = profile.match(/^Speech terms: (.+)$/m)?.[1];
+            if (terms) customVocabulary = terms.split(',').map(term => term.trim()).filter(Boolean).slice(0, 100);
+        }
         const sttOptions = {
+            customVocabulary,
             apiKey: this.modelInfo.apiKey,
             language: effectiveLanguage,
             usePortkey: this.modelInfo.provider === 'openai-glass',

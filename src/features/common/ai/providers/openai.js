@@ -281,6 +281,7 @@ function createStreamingLLM({ apiKey, model = 'gpt-4.1', temperature = 0.7, maxT
 
       const response = await fetch(fetchUrl, {
         method: 'POST',
+        signal: config.signal,
         headers,
         body: JSON.stringify({
           model: model,

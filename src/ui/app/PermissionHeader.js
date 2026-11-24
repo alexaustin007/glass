@@ -262,177 +262,50 @@ export class PermissionHeader extends LitElement {
     `;
 
     static properties = {
-        microphoneGranted: { type: String },
-        keychainGranted: { type: String },
-        isChecking: { type: String },
+        pending: { state: true },
+        error: { state: true },
         continueCallback: { type: Function },
-        userMode: { type: String }, // 'local' or 'firebase'
     };
 
-    constructor() {
-        super();
-        this.microphoneGranted = 'unknown';
-        this.keychainGranted = 'unknown';
-        this.isChecking = false;
-        this.continueCallback = null;
-        this.userMode = 'local'; // Default to local
-    }
-
-    updated(changedProperties) {
-        super.updated(changedProperties);
-        if (changedProperties.has('userMode')) {
-            const newHeight = this.userMode === 'firebase' ? 280 : 220;
-            console.log(`[PermissionHeader] User mode changed to ${this.userMode}, requesting resize to ${newHeight}px`);
-            this.dispatchEvent(new CustomEvent('request-resize', {
-                detail: { height: newHeight },
-                bubbles: true,
-                composed: true
-            }));
-        }
-    }
-
-    async connectedCallback() {
+    connectedCallback() {
         super.connectedCallback();
-
-        if (window.api) {
-            try {
-                const userState = await window.api.common.getCurrentUser();
-                this.userMode = userState.mode;
-            } catch (e) {
-                console.error('[PermissionHeader] Failed to get user state', e);
-                this.userMode = 'local'; // Fallback to local
-            }
-        }
-
-        await this.checkPermissions();
-        
-        // Set up periodic permission check
-        this.permissionCheckInterval = setInterval(async () => {
-            if (window.api) {
-                try {
-                    const userState = await window.api.common.getCurrentUser();
-                    this.userMode = userState.mode;
-                } catch (e) {
-                    this.userMode = 'local';
-                }
-            }
-            this.checkPermissions();
-        }, 1000);
+        this.checkKeychain();
+        this.permissionCheckInterval = setInterval(() => this.checkKeychain(), 1000);
     }
 
     disconnectedCallback() {
         super.disconnectedCallback();
-        if (this.permissionCheckInterval) {
-            clearInterval(this.permissionCheckInterval);
-        }
+        clearInterval(this.permissionCheckInterval);
     }
 
-    async checkPermissions() {
-        if (!window.api || this.isChecking) return;
-        
-        this.isChecking = true;
-        
+    async checkKeychain() {
+        if (!window.api || this.checking || this.continued) return;
+        this.checking = true;
         try {
             const permissions = await window.api.permissionHeader.checkSystemPermissions();
-            console.log('[PermissionHeader] Permission check result:', permissions);
-            
-            const prevMic = this.microphoneGranted;
-            const prevKeychain = this.keychainGranted;
-            
-            this.microphoneGranted = permissions.microphone;
-            this.keychainGranted = permissions.keychain;
-            
-            // if permissions changed == UI update
-            if (prevMic !== this.microphoneGranted || prevKeychain !== this.keychainGranted) {
-                console.log('[PermissionHeader] Permission status changed, updating UI');
-                this.requestUpdate();
+            if (this.isConnected && permissions.keychain === 'granted' && this.continueCallback) {
+                this.continued = true;
+                await this.continueCallback();
             }
-
-            const isKeychainRequired = this.userMode === 'firebase';
-            const keychainOk = !isKeychainRequired || this.keychainGranted === 'granted';
-            
-            // if all permissions granted == automatically continue
-            if (this.microphoneGranted === 'granted' && 
-                keychainOk && 
-                this.continueCallback) {
-                console.log('[PermissionHeader] All permissions granted, proceeding automatically');
-                setTimeout(() => this.handleContinue(), 500);
-            }
-        } catch (error) {
-            console.error('[PermissionHeader] Error checking permissions:', error);
+        } catch {
+            this.continued = false;
+            this.error = 'Could not check keychain access. Try again.';
         } finally {
-            this.isChecking = false;
-        }
-    }
-
-    async handleMicrophoneClick() {
-        if (!window.api || this.microphoneGranted === 'granted') return;
-        
-        console.log('[PermissionHeader] Requesting microphone permission...');
-        
-        try {
-            const result = await window.api.permissionHeader.checkSystemPermissions();
-            console.log('[PermissionHeader] Microphone permission result:', result);
-            
-            if (result.microphone === 'granted') {
-                this.microphoneGranted = 'granted';
-                this.requestUpdate();
-                return;
-              }
-            
-              if (result.microphone === 'not-determined' || result.microphone === 'denied' || result.microphone === 'unknown' || result.microphone === 'restricted') {
-                const res = await window.api.permissionHeader.requestMicrophonePermission();
-                if (res.status === 'granted' || res.success === true) {
-                    this.microphoneGranted = 'granted';
-                    this.requestUpdate();
-                    return;
-                }
-              }
-            
-            
-            // Check permissions again after a delay
-            // setTimeout(() => this.checkPermissions(), 1000);
-        } catch (error) {
-            console.error('[PermissionHeader] Error requesting microphone permission:', error);
+            this.checking = false;
         }
     }
 
     async handleKeychainClick() {
-        if (!window.api || this.keychainGranted === 'granted') return;
-        
-        console.log('[PermissionHeader] Requesting keychain permission...');
-        
+        if (this.pending) return;
+        this.pending = true;
+        this.error = '';
         try {
-            // Trigger initializeKey to prompt for keychain access
-            // Assuming encryptionService is accessible or via API
-            await window.api.permissionHeader.initializeEncryptionKey(); // New IPC handler needed
-            
-            // After success, update status
-            this.keychainGranted = 'granted';
-            this.requestUpdate();
-        } catch (error) {
-            console.error('[PermissionHeader] Error requesting keychain permission:', error);
-        }
-    }
-
-    async handleContinue() {
-        const isKeychainRequired = this.userMode === 'firebase';
-        const keychainOk = !isKeychainRequired || this.keychainGranted === 'granted';
-
-        if (this.continueCallback && 
-            this.microphoneGranted === 'granted' && 
-            keychainOk) {
-            // Mark permissions as completed
-            if (window.api && isKeychainRequired) {
-                try {
-                    await window.api.permissionHeader.markKeychainCompleted();
-                    console.log('[PermissionHeader] Marked keychain as completed');
-                } catch (error) {
-                    console.error('[PermissionHeader] Error marking keychain as completed:', error);
-                }
-            }
-            
-            this.continueCallback();
+            await window.api.permissionHeader.initializeEncryptionKey();
+            await this.checkKeychain();
+        } catch {
+            this.error = 'Could not access the Glass encryption key. Try again.';
+        } finally {
+            this.pending = false;
         }
     }
 
@@ -444,84 +317,20 @@ export class PermissionHeader extends LitElement {
     }
 
     render() {
-        const isKeychainRequired = this.userMode === 'firebase';
-        const containerHeight = isKeychainRequired ? 280 : 220;
-        const keychainOk = !isKeychainRequired || this.keychainGranted === 'granted';
-        const allGranted = this.microphoneGranted === 'granted' && keychainOk;
-
         return html`
-            <div class="container" style="height: ${containerHeight}px">
+            <div class="container" style="height: 220px">
                 <button class="close-button" @click=${this.handleClose} title="Close application">
                     <svg width="8" height="8" viewBox="0 0 10 10" fill="currentColor">
                         <path d="M1 1L9 9M9 1L1 9" stroke="currentColor" stroke-width="1.2" />
                     </svg>
                 </button>
-                <h1 class="title">Permission Setup Required</h1>
-
-                <div class="form-content ${allGranted ? 'all-granted' : ''}">
-                    ${!allGranted ? html`
-                        <div class="subtitle">Allow microphone access${isKeychainRequired ? ' and enable encryption' : ''} to continue</div>
-                        
-                        <div class="permission-status">
-                            <div class="permission-item ${this.microphoneGranted === 'granted' ? 'granted' : ''}">
-                                ${this.microphoneGranted === 'granted' ? html`
-                                    <svg class="check-icon" viewBox="0 0 20 20" fill="currentColor">
-                                        <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd" />
-                                    </svg>
-                                    <span>Microphone ✓</span>
-                                ` : html`
-                                    <svg class="permission-icon" viewBox="0 0 20 20" fill="currentColor">
-                                        <path fill-rule="evenodd" d="M7 4a3 3 0 016 0v4a3 3 0 11-6 0V4zm4 10.93A7.001 7.001 0 0017 8a1 1 0 10-2 0A5 5 0 015 8a1 1 0 00-2 0 7.001 7.001 0 006 6.93V17H6a1 1 0 100 2h8a1 1 0 100-2h-3v-2.07z" clip-rule="evenodd" />
-                                    </svg>
-                                    <span>Microphone</span>
-                                `}
-                            </div>
-                            
-                            ${isKeychainRequired ? html`
-                                <div class="permission-item ${this.keychainGranted === 'granted' ? 'granted' : ''}">
-                                    ${this.keychainGranted === 'granted' ? html`
-                                        <svg class="check-icon" viewBox="0 0 20 20" fill="currentColor">
-                                            <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd" />
-                                        </svg>
-                                        <span>Data Encryption ✓</span>
-                                    ` : html`
-                                        <svg class="permission-icon" viewBox="0 0 20 20" fill="currentColor">
-                                            <path fill-rule="evenodd" d="M18 8a6 6 0 01-7.744 5.668l-1.649 1.652c-.63.63-1.706.19-1.706-.742V12.18a.75.75 0 00-1.5 0v2.696c0 .932-1.075 1.372-1.706.742l-1.649-1.652A6 6 0 112 8zm-4 0a.75.75 0 00.75-.75A3.75 3.75 0 018.25 4a.75.75 0 000 1.5 2.25 2.25 0 012.25 2.25.75.75 0 00.75.75z" clip-rule="evenodd" />
-                                        </svg>
-                                        <span>Data Encryption</span>
-                                    `}
-                                </div>
-                            ` : ''}
-                        </div>
-
-                        <button 
-                            class="action-button" 
-                            @click=${this.handleMicrophoneClick}
-                            ?disabled=${this.microphoneGranted === 'granted'}
-                        >
-                            ${this.microphoneGranted === 'granted' ? 'Microphone Access Granted' : 'Grant Microphone Access'}
-                        </button>
-
-                        ${isKeychainRequired ? html`
-                            <button 
-                                class="action-button" 
-                                @click=${this.handleKeychainClick}
-                                ?disabled=${this.keychainGranted === 'granted'}
-                            >
-                                ${this.keychainGranted === 'granted' ? 'Encryption Enabled' : 'Enable Encryption'}
-                            </button>
-                            <div class="subtitle" style="visibility: ${this.keychainGranted === 'granted' ? 'hidden' : 'visible'}">
-                                Stores the key to encrypt your data. Press "<b>Always Allow</b>" to continue.
-                            </div>
-                        ` : ''}
-                    ` : html`
-                        <button 
-                            class="continue-button" 
-                            @click=${this.handleContinue}
-                        >
-                            Continue to Pickle Glass
-                        </button>
-                    `}
+                <h1 class="title">Enable Glass encryption</h1>
+                <div class="form-content">
+                    <div class="subtitle">Allow Glass to use its encryption key in your Mac keychain.</div>
+                    <button class="action-button" @click=${this.handleKeychainClick} ?disabled=${this.pending}>
+                        ${this.pending ? 'Waiting for keychain…' : 'Enable encryption'}
+                    </button>
+                    ${this.error ? html`<div class="subtitle" role="alert">${this.error}</div>` : ''}
                 </div>
             </div>
         `;

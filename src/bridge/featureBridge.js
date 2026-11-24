@@ -8,6 +8,7 @@ const modelStateService = require('../features/common/services/modelStateService
 const shortcutsService = require('../features/shortcuts/shortcutsService');
 const presetRepository = require('../features/common/repositories/preset');
 const localAIManager = require('../features/common/services/localAIManager');
+const interviewService = require('../features/ask/interviewService');
 const askService = require('../features/ask/askService');
 const listenService = require('../features/listen/listenService');
 const permissionService = require('../features/common/services/permissionService');
@@ -78,8 +79,26 @@ module.exports = {
     ipcMain.handle('ollama:shutdown', async (event, force = false) => await ollamaService.handleShutdown(force));
 
     // Ask
-    ipcMain.handle('ask:sendQuestionFromAsk', (event, userPrompt, includeScreenshot) =>
-      askService.sendMessage(userPrompt, [], { includeScreenshot: includeScreenshot !== false }));
+    const isAskHeader = event => event.sender === require('../window/windowManager').windowPool.get('header')?.webContents;
+    ipcMain.handle('ask:setInterviewRepliesEnabled', (event, enabled) => {
+      if (isAskHeader(event) && (!enabled || askService.isPanelVisible())) return interviewService.setRepliesEnabled(enabled);
+      return { success: false, error: 'Open Ask to include your replies.' };
+    });
+    ipcMain.handle('ask:getInterviewTurns', event => isAskHeader(event) ? [...interviewService.turns.values()].map(turn => ({ ...turn })) : []);
+    ipcMain.handle('ask:answerInterviewTurn', (event, id) => {
+      if (isAskHeader(event) && askService.isPanelVisible()) return interviewService.answer(id);
+      return { success: false, error: 'Open Ask to answer a caller question.' };
+    });
+    ipcMain.handle('ask:requestInterviewFollowup', (event, id, kind) => {
+      if (isAskHeader(event) && askService.isPanelVisible()) return interviewService.followup(id, kind);
+      return { success: false, error: 'Open Ask to request a follow-up.' };
+    });
+    ipcMain.handle('ask:sendQuestionFromAsk', (event, userPrompt, includeScreenshot) => {
+      if (isAskHeader(event) && interviewService.listening && typeof userPrompt === 'string' && userPrompt.trim()) {
+        return interviewService.add(userPrompt.trim(), true, interviewService.recentConversation());
+      }
+      return askService.sendMessage(userPrompt, [], { includeScreenshot: includeScreenshot !== false });
+    });
     ipcMain.handle('ask:sendQuestionFromSummary', async (event, userPrompt) => await askService.sendMessage(userPrompt));
     ipcMain.handle('ask:toggleAskButton', async () => await askService.toggleAskButton());
     ipcMain.handle('ask:toggleCallerFromToolbar', event => {
@@ -94,16 +113,10 @@ module.exports = {
       if (event.sender !== header?.webContents || !['caller', 'mic'].includes(source)) {
         throw new Error('Open the Ask panel to use its audio controls.');
       }
-      const permissions = await permissionService.checkSystemPermissions();
-      if (source === 'caller' && permissions.screen !== 'granted') {
-        throw new Error('Allow Glass in macOS Screen & System Audio Recording to listen to a caller.');
-      }
-      if (source === 'mic' && permissions.microphone !== 'granted') {
-        throw new Error('Allow Glass to use the microphone in macOS Privacy & Security to speak.');
-      }
-      if (header.isDestroyed() || !header.isVisible() || !askService.isPanelVisible()) {
-        throw new Error('Open the Ask panel to use its audio controls.');
-      }
+      const panelOpen = () => !header.isDestroyed() && header.isVisible() && askService.isPanelVisible();
+      if (!panelOpen()) throw new Error('Open the Ask panel to use its audio controls.');
+      await permissionService.ensureAudioPermission(source);
+      if (!panelOpen()) throw new Error('Open the Ask panel to use its audio controls.');
       return listenService.beginAskAudio();
     });
     ipcMain.handle('ask:endAudio', event => {

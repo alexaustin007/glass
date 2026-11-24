@@ -151,6 +151,14 @@ contextBridge.exposeInMainWorld('api', {
     
     // Message Handling
     sendMessage: (text, includeScreenshot) => ipcRenderer.invoke('ask:sendQuestionFromAsk', text, includeScreenshot),
+    setInterviewRepliesEnabled: enabled => ipcRenderer.invoke('ask:setInterviewRepliesEnabled', enabled),
+    getInterviewTurns: () => ipcRenderer.invoke('ask:getInterviewTurns'),
+    answerInterviewTurn: id => ipcRenderer.invoke('ask:answerInterviewTurn', id),
+    requestInterviewFollowup: (id, kind) => ipcRenderer.invoke('ask:requestInterviewFollowup', id, kind),
+    onInterviewTurn: callback => ipcRenderer.on('ask:interviewTurn', callback),
+    removeOnInterviewTurn: callback => ipcRenderer.removeListener('ask:interviewTurn', callback),
+    onInterviewReset: callback => ipcRenderer.on('ask:interviewReset', callback),
+    removeOnInterviewReset: callback => ipcRenderer.removeListener('ask:interviewReset', callback),
     beginAudio: source => ipcRenderer.invoke('ask:beginAudio', source),
     finishMicrophone: () => ipcRenderer.invoke('ask:finishMicrophone'),
     endAudio: () => ipcRenderer.invoke('ask:endAudio'),

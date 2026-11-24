@@ -4,6 +4,7 @@ const SummaryService = require('./summary/summaryService');
 const authService = require('../common/services/authService');
 const sessionRepository = require('../common/repositories/session');
 const sttRepository = require('./stt/repositories');
+const interviewService = require('../ask/interviewService');
 const internalBridge = require('../../bridge/internalBridge');
 
 class ListenService {
@@ -14,6 +15,7 @@ class ListenService {
         this.isInitializingSession = false;
         this.askAudioSession = null;
 
+        internalBridge.on('ask:pauseAudio', () => interviewService.pause());
         this.setupServiceCallbacks();
         console.log('[ListenService] Service instance created.');
     }
@@ -22,9 +24,13 @@ class ListenService {
         // STT service callbacks
         this.sttService.setCallbacks({
             onTranscriptionComplete: (speaker, text) => {
-                if (this.askAudioSession) return;
+                if (this.askAudioSession) {
+                    interviewService.transcript(speaker, text);
+                    return;
+                }
                 this.handleTranscriptionComplete(speaker, text);
             },
+            onCallerInterim: text => interviewService.interim(text),
             getCaptureWindowName: () => this.askAudioSession ? 'header' : 'listen',
             onStatusUpdate: (status) => {
                 this.sendToRenderer('update-status', status);
@@ -131,6 +137,7 @@ class ListenService {
         if (!session) return;
         if (session.closing) return session.closing;
 
+        interviewService.endListening();
         this.sttService.stopMacOSAudioCapture();
         session.closing = session.ready.catch(() => {}).then(() => this.sttService.closeSessions()).finally(() => {
             this.askAudioSession = null;
@@ -265,13 +272,21 @@ class ListenService {
             throw new Error('macOS audio capture only available on macOS');
         }
         if (this.askAudioSession?.closing) return false;
-        return await this.sttService.startMacOSAudioCapture({ killExisting: !this.askAudioSession });
+        const session = this.askAudioSession;
+        const alreadyCapturing = Boolean(this.sttService.systemAudioProc);
+        const started = await this.sttService.startMacOSAudioCapture({ killExisting: !session });
+        if (started && session && this.askAudioSession === session && !session.closing && !alreadyCapturing) interviewService.start();
+        return started;
     }
 
     async stopMacOSAudioCapture() {
         this.sttService.stopMacOSAudioCapture();
-        if (this.askAudioSession && this.sttService.modelInfo?.provider === 'gemini') {
-            await this.sttService.theirSttSession?.flush();
+        if (this.askAudioSession) {
+            try {
+                await this.sttService.theirSttSession?.flush?.();
+            } finally {
+                interviewService.endListening();
+            }
         }
     }
 

@@ -1288,17 +1288,6 @@ export class AskView extends LitElement {
         if (document.hasFocus()) input.focus();
     }
 
-    async handleCallerQuestion(event) {
-        if (this.isLoading || this.isStreaming) return;
-        try {
-            this.requestError = '';
-            const result = await window.api.askView.sendMessage(`Respond briefly to the caller's question.\n\nCaller: ${event.detail}`, false);
-            if (!result?.success) throw new Error(result?.error || 'Glass could not answer the caller.');
-        } catch (error) {
-            this.requestError = error.message;
-        }
-    }
-
     handleTextKeydown(e) {
         // Fix for IME composition issue: Ignore Enter key presses while composing.
         if (e.isComposing) {
@@ -1340,7 +1329,7 @@ export class AskView extends LitElement {
         return html`
             <div class="ask-container">
                 ${window.api.platform.isMacOS ? html`
-                    <ask-audio-controls @voice-question=${this.handleVoiceQuestion} @caller-question=${this.handleCallerQuestion}></ask-audio-controls>
+                    <ask-audio-controls @voice-question=${this.handleVoiceQuestion}></ask-audio-controls>
                 ` : ''}
                 <!-- Response Header -->
                 <div class="response-header ${!hasResponse ? 'hidden' : ''}">
