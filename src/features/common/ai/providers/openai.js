@@ -3,6 +3,7 @@ const WebSocket = require('ws');
 const { Portkey } = require('portkey-ai');
 const { Readable } = require('stream');
 const { getProviderForModel } = require('../factory.js');
+const { createRealtimeTranscription } = require('./openaiRealtimeTranscription');
 
 
 class OpenAIProvider {
@@ -42,6 +43,8 @@ class OpenAIProvider {
  * @returns {Promise<object>} STT session
  */
 async function createSTT({ apiKey, language = 'en', callbacks = {}, usePortkey = false, portkeyVirtualKey, ...config }) {
+  if (!usePortkey) return createRealtimeTranscription({ apiKey, language, callbacks, ...config });
+
   const keyType = usePortkey ? 'vKey' : 'apiKey';
   const key = usePortkey ? (portkeyVirtualKey || apiKey) : apiKey;
 
@@ -173,8 +176,7 @@ function createLLM({ apiKey, model = 'gpt-4.1', temperature = 0.7, maxTokens = 2
       const response = await client.chat.completions.create({
         model: model,
         messages: messages,
-        temperature: temperature,
-        max_tokens: maxTokens
+        ...answerOptions(model, temperature, maxTokens),
       });
       return {
         content: response.choices[0].message.content.trim(),
@@ -250,6 +252,13 @@ function createLLM({ apiKey, model = 'gpt-4.1', temperature = 0.7, maxTokens = 2
   };
 }
 
+function answerOptions(model, temperature, maxTokens) {
+  if (model === 'gpt-6-luna') {
+    return { reasoning_effort: 'none', max_completion_tokens: maxTokens };
+  }
+  return { temperature, max_tokens: maxTokens };
+}
+
 /** 
  * Creates an OpenAI streaming LLM instance
  * @param {object} opts - Configuration options
@@ -286,8 +295,7 @@ function createStreamingLLM({ apiKey, model = 'gpt-4.1', temperature = 0.7, maxT
         body: JSON.stringify({
           model: model,
           messages,
-          temperature,
-          max_tokens: maxTokens,
+          ...answerOptions(model, temperature, maxTokens),
           stream: true,
         }),
       });
@@ -306,4 +314,4 @@ module.exports = {
     createSTT,
     createLLM,
     createStreamingLLM
-}; 
+};

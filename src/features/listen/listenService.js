@@ -14,6 +14,7 @@ class ListenService {
         this.currentSessionId = null;
         this.isInitializingSession = false;
         this.askAudioSession = null;
+        this.askAudioGeneration = 0;
 
         internalBridge.on('ask:pauseAudio', () => interviewService.pause());
         this.setupServiceCallbacks();
@@ -30,7 +31,14 @@ class ListenService {
                 }
                 this.handleTranscriptionComplete(speaker, text);
             },
-            onCallerInterim: text => interviewService.interim(text),
+            onCallerInterim: (text, speaker) => {
+                if (this.askAudioSession && !this.askAudioSession.closing) interviewService.interim(text, speaker);
+            },
+            onConnectionLost: () => {
+                if (this.askAudioSession && !this.askAudioSession.closing) {
+                    internalBridge.emit('ask:pauseAudio', 'Transcription disconnected. Resume to reconnect.');
+                }
+            },
             getCaptureWindowName: () => this.askAudioSession ? 'header' : 'listen',
             onStatusUpdate: (status) => {
                 this.sendToRenderer('update-status', status);
@@ -108,9 +116,10 @@ class ListenService {
         }
     }
 
-    beginAskAudio() {
+    beginAskAudio(generation = this.askAudioGeneration) {
+        if (generation !== this.askAudioGeneration) throw new Error('Listening was paused.');
         if (this.askAudioSession?.closing) {
-            return this.askAudioSession.closing.then(() => this.beginAskAudio());
+            return this.askAudioSession.closing.then(() => this.beginAskAudio(generation));
         }
         if (this.askAudioSession) return this.askAudioSession.ready;
         if (this.currentSessionId || this.isInitializingSession || this.isSessionActive()) {
@@ -119,7 +128,9 @@ class ListenService {
 
         const session = {};
         this.askAudioSession = session;
-        session.ready = this.sttService.initializeSttSessions().catch(async error => {
+        session.ready = this.sttService.initializeSttSessions().then(() => {
+            if (this.askAudioSession === session && !session.closing) interviewService.resume('auto');
+        }).catch(async error => {
             if (!session.closing) {
                 try {
                     await this.sttService.closeSessions();
@@ -133,11 +144,12 @@ class ListenService {
     }
 
     endAskAudio() {
+        this.askAudioGeneration++;
         const session = this.askAudioSession;
         if (!session) return;
         if (session.closing) return session.closing;
 
-        interviewService.endListening();
+        interviewService.pause();
         this.sttService.stopMacOSAudioCapture();
         session.closing = session.ready.catch(() => {}).then(() => this.sttService.closeSessions()).finally(() => {
             this.askAudioSession = null;
@@ -272,22 +284,12 @@ class ListenService {
             throw new Error('macOS audio capture only available on macOS');
         }
         if (this.askAudioSession?.closing) return false;
-        const session = this.askAudioSession;
-        const alreadyCapturing = Boolean(this.sttService.systemAudioProc);
-        const started = await this.sttService.startMacOSAudioCapture({ killExisting: !session });
-        if (started && session && this.askAudioSession === session && !session.closing && !alreadyCapturing) interviewService.start();
-        return started;
+        return this.sttService.startMacOSAudioCapture({ killExisting: !this.askAudioSession });
     }
 
     async stopMacOSAudioCapture() {
         this.sttService.stopMacOSAudioCapture();
-        if (this.askAudioSession) {
-            try {
-                await this.sttService.theirSttSession?.flush?.();
-            } finally {
-                interviewService.endListening();
-            }
-        }
+        if (this.askAudioSession && !this.askAudioSession.closing) await this.sttService.theirSttSession?.flush?.();
     }
 
     isSessionActive() {

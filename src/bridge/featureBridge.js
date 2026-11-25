@@ -80,6 +80,16 @@ module.exports = {
 
     // Ask
     const isAskHeader = event => event.sender === require('../window/windowManager').windowPool.get('header')?.webContents;
+    ipcMain.handle('ask:openPanel', event => {
+      if (isAskHeader(event)) askService.setPanelVisible(true);
+    });
+    ipcMain.handle('ask:resetConversation', async event => {
+      if (!isAskHeader(event)) return;
+      await listenService.endAskAudio();
+      interviewService.reset();
+      return askService.closeAskWindow();
+    });
+    ipcMain.handle('ask:getInterviewSpeech', event => isAskHeader(event) ? interviewService.getSpeech() : []);
     ipcMain.handle('ask:setInterviewRepliesEnabled', (event, enabled) => {
       if (isAskHeader(event) && (!enabled || askService.isPanelVisible())) return interviewService.setRepliesEnabled(enabled);
       return { success: false, error: 'Open Ask to include your replies.' };
@@ -94,8 +104,8 @@ module.exports = {
       return { success: false, error: 'Open Ask to request a follow-up.' };
     });
     ipcMain.handle('ask:sendQuestionFromAsk', (event, userPrompt, includeScreenshot) => {
-      if (isAskHeader(event) && interviewService.listening && typeof userPrompt === 'string' && userPrompt.trim()) {
-        return interviewService.add(userPrompt.trim(), true, interviewService.recentConversation());
+      if (process.platform === 'darwin' && isAskHeader(event) && typeof userPrompt === 'string' && userPrompt.trim()) {
+        return interviewService.ask(userPrompt.trim());
       }
       return askService.sendMessage(userPrompt, [], { includeScreenshot: includeScreenshot !== false });
     });
@@ -113,11 +123,10 @@ module.exports = {
       if (event.sender !== header?.webContents || !['caller', 'mic'].includes(source)) {
         throw new Error('Open the Ask panel to use its audio controls.');
       }
-      const panelOpen = () => !header.isDestroyed() && header.isVisible() && askService.isPanelVisible();
-      if (!panelOpen()) throw new Error('Open the Ask panel to use its audio controls.');
+      const generation = listenService.askAudioGeneration;
       await permissionService.ensureAudioPermission(source);
-      if (!panelOpen()) throw new Error('Open the Ask panel to use its audio controls.');
-      return listenService.beginAskAudio();
+      if (header.isDestroyed()) throw new Error('The Glass window was closed.');
+      return listenService.beginAskAudio(generation);
     });
     ipcMain.handle('ask:endAudio', event => {
       const header = require('../window/windowManager').windowPool.get('header');
@@ -137,7 +146,12 @@ module.exports = {
         }
         return result;
     });
-    ipcMain.handle('listen:startMacosSystemAudio', async () => await listenService.handleStartMacosAudio());
+    ipcMain.handle('listen:startMacosSystemAudio', event => {
+      if (isAskHeader(event) && (!listenService.askAudioSession || listenService.askAudioSession.closing)) {
+        return { success: false, error: 'Listening was paused.' };
+      }
+      return listenService.handleStartMacosAudio();
+    });
     ipcMain.handle('listen:stopMacosSystemAudio', async () => await listenService.handleStopMacosAudio());
     ipcMain.handle('update-google-search-setting', async (event, enabled) => await listenService.handleUpdateGoogleSearchSetting(enabled));
     ipcMain.handle('listen:isSessionActive', async () => await listenService.isSessionActive());

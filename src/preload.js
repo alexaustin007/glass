@@ -147,12 +147,17 @@ contextBridge.exposeInMainWorld('api', {
   // src/ui/ask/AskView.js
   askView: {
     // Window Management
+    openPanel: () => ipcRenderer.invoke('ask:openPanel'),
+    resetConversation: () => ipcRenderer.invoke('ask:resetConversation'),
     closeAskWindow: () => ipcRenderer.invoke('ask:closeAskWindow'),
     
     // Message Handling
     sendMessage: (text, includeScreenshot) => ipcRenderer.invoke('ask:sendQuestionFromAsk', text, includeScreenshot),
     setInterviewRepliesEnabled: enabled => ipcRenderer.invoke('ask:setInterviewRepliesEnabled', enabled),
     getInterviewTurns: () => ipcRenderer.invoke('ask:getInterviewTurns'),
+    getInterviewSpeech: () => ipcRenderer.invoke('ask:getInterviewSpeech'),
+    onInterviewSpeech: callback => ipcRenderer.on('ask:interviewSpeech', callback),
+    removeOnInterviewSpeech: callback => ipcRenderer.removeListener('ask:interviewSpeech', callback),
     answerInterviewTurn: id => ipcRenderer.invoke('ask:answerInterviewTurn', id),
     requestInterviewFollowup: (id, kind) => ipcRenderer.invoke('ask:requestInterviewFollowup', id, kind),
     onInterviewTurn: callback => ipcRenderer.on('ask:interviewTurn', callback),

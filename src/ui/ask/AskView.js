@@ -16,6 +16,7 @@ export class AskView extends LitElement {
         headerAnimating: { type: Boolean },
         isStreaming: { type: Boolean },
         requestError: { state: true },
+        submitting: { state: true },
     };
 
     static styles = css`
@@ -741,7 +742,7 @@ export class AskView extends LitElement {
         this.headerAnimating = false;
         this.isStreaming = false;
         this.requestError = '';
-        this.voiceDraft = false;
+        this.submitting = false;
 
         this.marked = null;
         this.hljs = null;
@@ -762,7 +763,7 @@ export class AskView extends LitElement {
         this.handleCloseAskWindow = this.handleCloseAskWindow.bind(this);
         this.handleCloseIfNoContent = this.handleCloseIfNoContent.bind(this);
 
-        this.loadLibraries();
+        if (!window.api?.platform.isMacOS) this.loadLibraries();
 
     }
 
@@ -773,39 +774,48 @@ export class AskView extends LitElement {
 
         document.addEventListener('keydown', this.handleEscKey);
 
-        this.handleQuestionFromAssistant = (event, question) => {
-            console.log('AskView: Received question from ListenView:', question);
-            this.handleSendText(null, question);
-        };
-
         if (window.api) {
-            window.api.askView.onShowTextInput(() => {
-                console.log('Show text input signal received');
-                if (!this.showTextInput) {
-                    this.showTextInput = true;
-                    this.updateComplete.then(() => this.focusTextInput());
-                  } else {
-                    this.focusTextInput();
-                  }
-            });
-
-            window.api.askView.onScrollResponseUp(() => this.handleScroll('up'));
-            window.api.askView.onScrollResponseDown(() => this.handleScroll('down'));
-            window.api.askView.onAskStateUpdate((event, newState) => {
-                this.currentResponse = newState.currentResponse;
-                this.currentQuestion = newState.currentQuestion;
-                this.isLoading       = newState.isLoading;
-                this.isStreaming     = newState.isStreaming;
-              
-                const wasHidden = !this.showTextInput;
-                this.showTextInput = newState.showTextInput;
-              
-                if (newState.showTextInput && wasHidden) {
-                    this.updateComplete.then(() => this.focusTextInput());
-                }
-              });
-            console.log('AskView: IPC 이벤트 리스너 등록 완료');
+            const api = window.api.askView;
+            api.onShowTextInput(this.handleShowTextInput);
+            api.onScrollResponseUp(this.scrollUp);
+            api.onScrollResponseDown(this.scrollDown);
+            api.onAskStateUpdate(this.handleAskStateUpdate);
         }
+    }
+
+    handleShowTextInput = () => {
+        this.showTextInput = true;
+        this.updateComplete.then(() => this.focusTextInput());
+    };
+
+    scrollUp = () => this.handleScroll('up');
+    scrollDown = () => this.handleScroll('down');
+
+    handleAskStateUpdate = (_, state) => {
+        this.currentResponse = state.currentResponse;
+        this.currentQuestion = state.currentQuestion;
+        this.isLoading = state.isLoading;
+        this.isStreaming = state.isStreaming;
+        this.showTextInput = state.showTextInput;
+    };
+
+    async setConversationEnabled(enabled) {
+        this.conversationEnabled = enabled;
+        await this.updateComplete;
+        const audio = this.shadowRoot.querySelector('ask-audio-controls');
+        if (!audio || this.conversationEnabled !== enabled) return;
+        audio.enabled = enabled;
+        if (!enabled) {
+            const input = this.shadowRoot.getElementById('textInput');
+            if (input) input.value = '';
+            this.requestError = '';
+            await audio.pauseListening();
+        }
+    }
+
+    async startListening() {
+        await this.updateComplete;
+        if (this.conversationEnabled) return this.shadowRoot.querySelector('ask-audio-controls')?.startListening();
     }
 
     disconnectedCallback() {
@@ -832,8 +842,8 @@ export class AskView extends LitElement {
         if (window.api) {
             window.api.askView.removeOnAskStateUpdate(this.handleAskStateUpdate);
             window.api.askView.removeOnShowTextInput(this.handleShowTextInput);
-            window.api.askView.removeOnScrollResponseUp(this.handleScroll);
-            window.api.askView.removeOnScrollResponseDown(this.handleScroll);
+            window.api.askView.removeOnScrollResponseUp(this.scrollUp);
+            window.api.askView.removeOnScrollResponseDown(this.scrollDown);
             console.log('✅ AskView: IPC 이벤트 리스너 제거 필요');
         }
     }
@@ -931,8 +941,9 @@ export class AskView extends LitElement {
 
     focusTextInput() {
         requestAnimationFrame(() => {
+            this.shadowRoot?.querySelector('ask-audio-controls')?.scrollToLatest();
             const textInput = this.shadowRoot?.getElementById('textInput');
-            if (textInput) {
+            if (textInput?.getClientRects().length) {
                 textInput.focus();
             }
         });
@@ -978,6 +989,8 @@ export class AskView extends LitElement {
     }
 
     handleScroll(direction) {
+        const conversation = this.shadowRoot.querySelector('ask-audio-controls');
+        if (conversation) return conversation.scroll(direction);
         const scrollableElement = this.shadowRoot.querySelector('#responseContainer');
         if (scrollableElement) {
             const scrollAmount = 100; // 한 번에 스크롤할 양 (px)
@@ -1265,27 +1278,20 @@ export class AskView extends LitElement {
     async handleSendText(e, overridingText = '') {
         const textInput = this.shadowRoot?.getElementById('textInput');
         const text = (overridingText || textInput?.value || '').trim();
-        if (this.isLoading || this.isStreaming || !textInput) return;
+        const conversation = window.api.platform.isMacOS;
+        if (this.submitting || this.isLoading || this.isStreaming || !textInput || (conversation && (!this.conversationEnabled || !text))) return;
 
-        const includeScreenshot = !this.voiceDraft;
+        this.submitting = true;
         try {
             this.requestError = '';
-            const result = await window.api.askView.sendMessage(text, includeScreenshot);
+            const result = await window.api.askView.sendMessage(text, !conversation);
             if (!result?.success) throw new Error(result?.error || 'Glass could not answer the question.');
-            if (textInput.value.trim() === text) {
-                textInput.value = '';
-                this.voiceDraft = false;
-            }
+            if (textInput.value.trim() === text) textInput.value = '';
         } catch (error) {
             this.requestError = error.message;
+        } finally {
+            this.submitting = false;
         }
-    }
-
-    handleVoiceQuestion(event) {
-        const input = this.shadowRoot.getElementById('textInput');
-        this.voiceDraft = true;
-        input.value = [input.value.trim(), event.detail].filter(Boolean).join(' ');
-        if (document.hasFocus()) input.focus();
     }
 
     handleTextKeydown(e) {
@@ -1322,15 +1328,42 @@ export class AskView extends LitElement {
 
 
 
+    renderInput(hasResponse = true) {
+        return html`
+                ${this.requestError ? html`<p class="ask-error" role="alert">${this.requestError}</p>` : ''}
+
+                <!-- Text Input Container -->
+                <div class="text-input-container ${!hasResponse ? 'no-response' : ''} ${!this.showTextInput ? 'hidden' : ''}">
+                    <input
+                        type="text"
+                        id="textInput"
+                        aria-label="Ask a question"
+                        placeholder=${window.api.platform.isMacOS ? 'Ask a question…' : 'Ask about your screen or audio'}
+                        @keydown=${this.handleTextKeydown}
+                        @focus=${this.handleInputFocus}
+                    />
+                    <button
+                        class="submit-btn"
+                        ?disabled=${this.submitting || this.isLoading || this.isStreaming}
+                        @click=${this.handleSendText}
+                    >
+                        <span class="btn-label">Submit</span>
+                        <span class="btn-icon">
+                            ↵
+                        </span>
+                    </button>
+                </div>`;
+    }
+
     render() {
         const hasResponse = this.isLoading || this.currentResponse || this.isStreaming;
         const headerText = this.isLoading ? 'Thinking...' : 'AI Response';
+        if (window.api.platform.isMacOS) {
+            return html`<div class="ask-container"><ask-audio-controls></ask-audio-controls>${this.renderInput()}</div>`;
+        }
 
         return html`
             <div class="ask-container">
-                ${window.api.platform.isMacOS ? html`
-                    <ask-audio-controls @voice-question=${this.handleVoiceQuestion}></ask-audio-controls>
-                ` : ''}
                 <!-- Response Header -->
                 <div class="response-header ${!hasResponse ? 'hidden' : ''}">
                     <div class="header-left">
@@ -1377,28 +1410,7 @@ export class AskView extends LitElement {
                     <!-- Content is dynamically generated in updateResponseContent() -->
                 </div>
 
-                ${this.requestError ? html`<p class="ask-error" role="alert">${this.requestError}</p>` : ''}
-
-                <!-- Text Input Container -->
-                <div class="text-input-container ${!hasResponse ? 'no-response' : ''} ${!this.showTextInput ? 'hidden' : ''}">
-                    <input
-                        type="text"
-                        id="textInput"
-                        placeholder="Ask about your screen or audio"
-                        @keydown=${this.handleTextKeydown}
-                        @focus=${this.handleInputFocus}
-                    />
-                    <button
-                        class="submit-btn"
-                        ?disabled=${this.isLoading || this.isStreaming}
-                        @click=${this.handleSendText}
-                    >
-                        <span class="btn-label">Submit</span>
-                        <span class="btn-icon">
-                            ↵
-                        </span>
-                    </button>
-                </div>
+                ${this.renderInput(hasResponse)}
             </div>
         `;
     }

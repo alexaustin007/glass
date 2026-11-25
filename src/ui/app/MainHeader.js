@@ -5,7 +5,8 @@ export class MainHeader extends LitElement {
         isTogglingSession: { type: Boolean, state: true },
         shortcuts: { type: Object, state: true },
         listenSessionStatus: { type: String, state: true },
-        callerListening: { type: Boolean, state: true },
+        capture: { type: Object, state: true },
+        panelOpen: { type: Boolean, state: true },
     };
 
     static styles = css`
@@ -347,11 +348,25 @@ export class MainHeader extends LitElement {
             transform: none !important;
             will-change: auto !important;
         }
+        .conversation-toolbar { width: 100%; gap: 6px; padding: 0 11px; border-radius: 12px; }
+        .conversation-toolbar::before, .conversation-toolbar::after { display: none; }
+        .capture-status { display: flex; flex: 1; align-items: center; gap: 7px; min-width: 0; color: #e2e8e6; font-size: 12px; }
+        .capture-status::before { content: ''; width: 7px; height: 7px; flex-shrink: 0; border-radius: 50%; background: #9aa3a6; }
+        .capture-status.live::before { background: #8bd4b3; }
+        .conversation-toolbar button { -webkit-app-region: no-drag; cursor: pointer; background: #ffffff0b; border: 1px solid #ffffff29; border-radius: 7px; color: #edeff0; font-size: 12px; min-height: 27px; padding: 0 8px; }
+        .conversation-toolbar button:hover { background: #ffffff1c; }
+        .conversation-toolbar button:focus-visible { outline: 2px solid #b3e0cf; outline-offset: 1px; }
+        .conversation-toolbar .capture-control { background: #d6e9e1; color: #183d31; border-color: transparent; font-weight: 600; }
+        .conversation-toolbar .capture-control:hover { background: #e7f6f0; }
+        .conversation-toolbar button:disabled { opacity: .55; }
+        .conversation-toolbar .more { border-color: transparent; background: transparent; font-size: 17px; padding: 0 6px; line-height: 1; }
         `;
 
     constructor() {
         super();
         this.shortcuts = {};
+        this.capture = { phase: 'paused', listening: false, status: 'Paused' };
+        this.panelOpen = false;
         this.isVisible = true;
         this.isAnimating = false;
         this.hasSlidIn = false;
@@ -376,6 +391,7 @@ export class MainHeader extends LitElement {
     }
 
     async handleMouseDown(e) {
+        if (window.api?.platform.isMacOS && e.target.closest('button')) return;
         e.preventDefault();
 
         const initialPosition = await window.api.mainHeader.getHeaderPosition();
@@ -611,11 +627,23 @@ export class MainHeader extends LitElement {
         `)}`;
     }
 
+    renderConversationToolbar() {
+        const { phase, status, listening, caller, mic } = this.capture;
+        const sources = [caller && 'Caller audio', mic && 'Microphone'].filter(Boolean).join(' and ');
+        return html`<div class="header conversation-toolbar" @mousedown=${this.handleMouseDown}>
+            <span class="capture-status ${listening ? 'live' : ''}" role="status" title=${sources || status}>${status}</span>
+            <button class="capture-control" data-action="toggle-listening" type="button" ?disabled=${phase === 'stopping'}
+                aria-pressed=${String(listening)} @click=${this._handleListenClick}>${listening ? 'Pause' : 'Resume'}</button>
+            <button type="button" aria-expanded=${String(this.panelOpen)} title="Show or hide the conversation" @click=${this._handleAskClick}>${this.panelOpen ? 'Hide' : 'Show'}</button>
+            <button type="button" class="more" aria-label="Settings" title="Settings" @click=${this.showSettingsWindow}
+                @mouseenter=${this.showSettingsWindow} @mouseleave=${this.hideSettingsWindow}>⋯</button>
+        </div>`;
+    }
+
     render() {
-        const listenButtonText = window.api?.platform.isMacOS
-            ? (this.callerListening ? 'Stop' : 'Listen')
-            : this._getListenButtonText(this.listenSessionStatus);
-    
+        if (window.api?.platform.isMacOS) return this.renderConversationToolbar();
+        const listenButtonText = this._getListenButtonText(this.listenSessionStatus);
+
         const buttonClasses = {
             active: listenButtonText === 'Stop',
             done: listenButtonText === 'Done',

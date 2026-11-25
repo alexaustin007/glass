@@ -196,9 +196,9 @@ function setupWindowController(windowPool, layoutManager, movementManager) {
         }
     });
 
-    internalBridge.on('ask:pauseAudio', () => {
+    internalBridge.on('ask:pauseAudio', reason => {
         const header = windowPool.get('header');
-        if (header && !header.isDestroyed()) header.webContents.send('ask:audioPaused');
+        if (header && !header.isDestroyed()) header.webContents.send('ask:audioPaused', reason);
         Promise.resolve(listenService.endAskAudio()).catch(console.error);
     });
 }
@@ -636,8 +636,9 @@ function createWindows() {
     if (currentHeaderState === 'main') createFeatureWindows(header);
 
     const stopAskAudio = () => Promise.resolve(listenService.endAskAudio()).catch(console.error);
-    header.on('hide', () => internalBridge.emit('ask:pauseAudio'));
+    if (process.platform !== 'darwin') header.on('hide', () => internalBridge.emit('ask:pauseAudio'));
     header.on('closed', stopAskAudio);
+    header.webContents.on('did-start-loading', stopAskAudio);
     header.webContents.on('render-process-gone', stopAskAudio);
 
     header.setContentProtection(isContentProtectionOn);

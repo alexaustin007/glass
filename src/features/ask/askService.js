@@ -153,7 +153,7 @@ class AskService {
         if (!header || header.isDestroyed()) return;
         this.state.isVisible = visible;
         this.state.showTextInput = true;
-        if (!visible) internalBridge.emit('ask:pauseAudio');
+        if (!visible && process.platform !== 'darwin') internalBridge.emit('ask:pauseAudio');
         this._broadcastState();
     }
 

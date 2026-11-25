@@ -347,7 +347,7 @@ async function setupMicProcessing(micStream) {
     };
 }
 
-async function startMicrophone() {
+async function startMicrophone({ onEnded } = {}) {
     const generation = ++microphoneGeneration;
     const stream = await navigator.mediaDevices.getUserMedia({
         audio: { sampleRate: SAMPLE_RATE, channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
@@ -359,6 +359,19 @@ async function startMicrophone() {
     }
 
     micMediaStream = stream;
+    if (onEnded) {
+        const track = stream.getAudioTracks()[0];
+        const disconnected = () => {
+            if (generation !== microphoneGeneration) return;
+            stopMicrophone();
+            onEnded();
+        };
+        if (!track || track.readyState === 'ended') {
+            disconnected();
+            return false;
+        }
+        track.addEventListener('ended', disconnected, { once: true });
+    }
     try {
         const { context, processor, flush } = await setupMicProcessing(stream);
         if (generation !== microphoneGeneration) {

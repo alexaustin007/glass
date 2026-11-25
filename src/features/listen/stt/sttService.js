@@ -26,6 +26,7 @@ class SttService {
         this.theirSttSession = null;
         this.myCurrentUtterance = '';
         this.theirCurrentUtterance = '';
+        this.liveItems = new Map();
         
         // Turn-completion debouncing
         this.myCompletionBuffer = '';
@@ -48,16 +49,17 @@ class SttService {
         this.modelInfo = null; 
     }
 
-    setCallbacks({ onTranscriptionComplete, onCallerInterim, onStatusUpdate, getCaptureWindowName }) {
+    setCallbacks({ onTranscriptionComplete, onCallerInterim, onConnectionLost, onStatusUpdate, getCaptureWindowName }) {
         this.onTranscriptionComplete = onTranscriptionComplete;
         this.onCallerInterim = onCallerInterim;
+        this.onConnectionLost = onConnectionLost;
         this.onStatusUpdate = onStatusUpdate;
         this.getCaptureWindowName = getCaptureWindowName;
     }
 
     sendToRenderer(channel, data) {
-        if (channel === 'stt-update' && data.speaker === 'Them' && data.isPartial && data.text) {
-            this.onCallerInterim?.(data.text);
+        if (channel === 'stt-update' && data.isPartial && data.text) {
+            this.onCallerInterim?.(data.text, data.speaker);
         }
         const { windowPool } = require('../../../window/windowManager');
         const captureWindow = windowPool?.get(this.getCaptureWindowName?.() ?? 'listen');
@@ -142,6 +144,27 @@ class SttService {
         });
     }
 
+    handleOpenAILiveTranscript(speaker, event) {
+        const item = speaker + ':' + (event.item_id || 'current');
+        const isFinal = event.type === 'conversation.item.input_audio_transcription.completed';
+        let text;
+        if (isFinal || event.type === 'conversation.item.input_audio_transcription.failed') {
+            this.liveItems.delete(item);
+            text = event.transcript;
+        } else if (event.type === 'conversation.item.input_audio_transcription.delta') {
+            text = (this.liveItems.get(item) || '') + (event.delta || '');
+            this.liveItems.set(item, text);
+        } else {
+            return;
+        }
+        text = text?.trim();
+        if (!text) return;
+        if (isFinal) this.onTranscriptionComplete?.(speaker, text);
+        this.sendToRenderer('stt-update', {
+            speaker, text, isPartial: !isFinal, isFinal, timestamp: Date.now(),
+        });
+    }
+
     debounceMyCompletion(text) {
         if (this.modelInfo?.provider === 'gemini') {
             this.myCompletionBuffer += text;
@@ -177,7 +200,7 @@ class SttService {
         console.log(`[SttService] Initializing STT for ${modelInfo.provider} using model ${modelInfo.model}`);
 
         const handleMyMessage = message => {
-            if (!this.modelInfo) {
+            if (!this.modelInfo || generation !== this.sessionGeneration) {
                 console.log('[SttService] Ignoring message - session already closed');
                 return;
             }
@@ -225,6 +248,8 @@ class SttService {
                 return;
             } else if (this.modelInfo.provider === 'gemini') {
                 this.handleGeminiTranscript('Me', message.serverContent);
+            } else if (this.modelInfo.model === 'gpt-live-transcribe' && !message.error) {
+                this.handleOpenAILiveTranscript('Me', message);
 
             // Deepgram 
             } else if (this.modelInfo.provider === 'deepgram') {
@@ -292,7 +317,7 @@ class SttService {
         const handleTheirMessage = message => {
             if (!message || typeof message !== 'object') return;
 
-            if (!this.modelInfo) {
+            if (!this.modelInfo || generation !== this.sessionGeneration) {
                 console.log('[SttService] Ignoring message - session already closed');
                 return;
             }
@@ -340,6 +365,8 @@ class SttService {
                 return;
             } else if (this.modelInfo.provider === 'gemini') {
                 this.handleGeminiTranscript('Them', message.serverContent);
+            } else if (this.modelInfo.model === 'gpt-live-transcribe' && !message.error) {
+                this.handleOpenAILiveTranscript('Them', message);
 
             // Deepgram
             } else if (this.modelInfo.provider === 'deepgram') {
@@ -399,12 +426,19 @@ class SttService {
             }
         };
 
+        let activeSessions;
+        const onClose = event => {
+            console.log('[STT] Transcription connection closed:', event?.reason);
+            if (activeSessions && this.mySttSession === activeSessions[0] && generation === this.sessionGeneration) {
+                this.onConnectionLost?.();
+            }
+        };
         const mySttConfig = {
             language: effectiveLanguage,
             callbacks: {
                 onmessage: handleMyMessage,
                 onerror: error => console.error('My STT session error:', error.message),
-                onclose: event => console.log('My STT session closed:', event.reason),
+                onclose: onClose,
             },
         };
         
@@ -413,12 +447,12 @@ class SttService {
             callbacks: {
                 onmessage: handleTheirMessage,
                 onerror: error => console.error('Their STT session error:', error.message),
-                onclose: event => console.log('Their STT session closed:', event.reason),
+                onclose: onClose,
             },
         };
         
         let customVocabulary = [];
-        if (modelInfo.provider === 'gemini' && this.getCaptureWindowName?.() === 'header') {
+        if ((modelInfo.provider === 'gemini' || modelInfo.model === 'gpt-live-transcribe') && this.getCaptureWindowName?.() === 'header') {
             const { app } = require('electron');
             const file = require('path').join(app.getPath('userData'), 'interview-context.md');
             const profile = await require('fs/promises').readFile(file, 'utf8').catch(() => '');
@@ -428,6 +462,7 @@ class SttService {
         const sttOptions = {
             customVocabulary,
             apiKey: this.modelInfo.apiKey,
+            model: modelInfo.model,
             language: effectiveLanguage,
             usePortkey: this.modelInfo.provider === 'openai-glass',
             portkeyVirtualKey: this.modelInfo.provider === 'openai-glass' ? this.modelInfo.apiKey : undefined,
@@ -448,7 +483,8 @@ class SttService {
             }));
             throw failedSession?.reason ?? new Error('Audio session was stopped.');
         }
-        [this.mySttSession, this.theirSttSession] = sessions.map(session => session.value);
+        activeSessions = sessions.map(session => session.value);
+        [this.mySttSession, this.theirSttSession] = activeSessions;
 
         console.log('✅ Both STT sessions initialized successfully.');
 
@@ -732,6 +768,7 @@ class SttService {
 
     async closeSessions() {
         this.sessionGeneration++;
+        this.liveItems.clear();
         this.stopMacOSAudioCapture();
 
         // Clear heartbeat / renewal timers

@@ -1,416 +1,322 @@
 import { html, css, LitElement } from '../assets/lit-core-2.7.4.min.js';
 import { startMicrophone, stopMicrophone } from '../listen/audioCore/listenCapture.js';
 
-const shortcutLabels = { Cmd: '⌘', Ctrl: '⌃', Shift: '⇧', Alt: '⌥', Option: '⌥' };
+const sourceNames = { caller: 'Caller', mic: 'You', typed: 'You', followup: 'Follow-up' };
+const privacySettings = {
+    caller: 'x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture',
+    mic: 'x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone',
+};
+
+// Lit inserts every variable as text, including unclosed code blocks arriving token by token.
+function renderAnswer(text) {
+    const blocks = [];
+    let lines = [];
+    let fence = '';
+    let language = '';
+    const flush = () => {
+        if (fence) {
+            blocks.push(html`<div class="code-block">${language ? html`<small>${language}</small>` : ''}<pre><code>${lines.join('\n')}</code></pre></div>`);
+        } else if (lines.length) {
+            blocks.push(html`<p>${lines.join('\n').trim()}</p>`);
+        }
+        lines = [];
+    };
+    for (const line of text.split(/\r?\n/)) {
+        const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+        if (!fence && marker) {
+            flush();
+            fence = marker[1];
+            language = marker[2].trim().split(/\s+/)[0];
+        } else if (fence && marker && marker[1].startsWith(fence) && !marker[2].trim()) {
+            flush();
+            fence = '';
+            language = '';
+        } else {
+            lines.push(line);
+        }
+    }
+    flush();
+    return blocks;
+}
+
+function mergeById(snapshot, updates) {
+    const records = new Map([...snapshot, ...updates].map(record => [record.id, record]));
+    return [...records.values()];
+}
 
 export class AudioControls extends LitElement {
     static properties = {
-        callerActive: { state: true },
-        micActive: { state: true },
-        includeReplies: { state: true },
-        replyMicActive: { state: true },
-        replyText: { state: true },
-        busy: { state: true },
-        shortcuts: { state: true },
-        callerText: { state: true },
-        micText: { state: true },
-        error: { state: true },
-        turns: { state: true },
-        selectedId: { state: true },
-        showHistory: { state: true },
-        pendingAction: { state: true },
+        turns: { state: true }, speech: { state: true }, partials: { state: true },
+        phase: { state: true }, callerActive: { state: true }, micActive: { state: true },
+        sourceErrors: { state: true }, error: { state: true },
     };
 
     static styles = css`
-        :host { display: block; flex-shrink: 0; }
-        .controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; padding: 9px 12px 0; }
-        button {
-            display: inline-flex; justify-content: space-between; align-items: center; gap: 4px; border-radius: 7px;
-            min-height: 30px; padding: 4px 9px; background: rgba(255, 255, 255, .09);
-            color: inherit; border: 1px solid rgba(255, 255, 255, .15);
-            font: 500 12px -apple-system, BlinkMacSystemFont, sans-serif; cursor: pointer;
-        }
-        button:hover:not(:disabled) { background: rgba(255, 255, 255, .18); }
-        button:focus-visible { outline: 2px solid #93c5fd; outline-offset: 1px; }
-        button:disabled { opacity: .55; cursor: default; }
-        button[aria-pressed='true'] { background: rgba(153, 27, 27, .65); border-color: #fca5a5; }
-        kbd, .status { color: #d1d5db; font-size: 11px; }
-        .caption, .error, .status { margin: 8px 12px 0; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
-        .caption { max-height: 96px; overflow-y: auto; user-select: text; }
-        .error { color: #fecaca; }
-        .controls .interview { background: #e0f4ee; border-color: #e0f4ee; color: #102c23; font-weight: 650; }
-        .controls .interview kbd { color: inherit; opacity: .75; }
-        .controls .interview:hover { background: #c8eedd; }
-        .controls .interview[aria-pressed='true'] { color: #d4f9eb; border-color: #549e81; background: #203d32; }
-        .controls button { min-height: 32px; }
-        .live-hint, .status, .caption, .history, .answer, .error { font-family: -apple-system, BlinkMacSystemFont, sans-serif; }
-        .live-hint { margin: 7px 12px 0; font-size: 11px; line-height: 1.45; color: #c4cbd1; }
-        .caption { max-height: 56px; }
-        .reply-option { display: flex; gap: 6px; align-items: center; margin: 6px 12px 0; color: #d8dfe2;
-            font: 12px -apple-system, BlinkMacSystemFont, sans-serif; cursor: pointer; }
-        .reply-option input { margin: 0; accent-color: #a8dcc7; }
-        .reply-option small { margin-left: auto; color: #b4ebd4; }
-        .caption strong { color: #b4ebd4; font-weight: 600; margin-right: 4px; }
-        .history { margin: 7px 12px 0; display: grid; gap: 3px; max-height: 120px; overflow-y: auto; }
-        .history button { width: 100%; gap: 8px; text-align: left; }
-        .history .title { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-        .history small { flex-shrink: 0; color: #bec9c4; }
-        .history .selected { border-color: #83b9a4; }
-        .answer { margin: 9px 12px 0; padding: 9px 0 0; border-top: 1px solid #ffffff26; }
-        .answer-top, .followups { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
-        .answer-top { justify-content: space-between; color: #b4ebd4; font-size: 11px; font-weight: 600; }
-        .answer button { min-height: 24px; font-size: 11px; }
-        .answer h3 { font-size: 13px; line-height: 1.45; margin: 5px 0; overflow-wrap: anywhere; }
-        .answer-content { max-height: 185px; overflow-y: auto; user-select: text; }
-        .answer-content p { font-size: 14px; line-height: 1.5; white-space: pre-wrap; margin: 0; overflow-wrap: anywhere; }
-        .followups { margin-top: 7px; }
-        .answer .status, .answer .error { margin: 4px 0; }
+        :host { display: block; min-width: 0; font: 13px/1.48 -apple-system, BlinkMacSystemFont, sans-serif; color: #f2f4f5; }
+        #conversation { box-sizing: border-box; min-height: 64px; max-height: min(465px, calc(var(--ask-available-height, 640px) - 74px)); overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: #ffffff40 transparent; padding: 0 15px; user-select: text; }
+        #conversation:focus-visible { outline: 1px solid #a4cdbf; outline-offset: -2px; }
+        article { min-width: 0; padding: 10px 0; border-top: 1px solid #ffffff14; }
+        article:first-child { border-top: 0; }
+        .speaker, .answer-label { color: #b6c1c5; font-size: 11px; font-weight: 600; }
+        .question, .transcript, .answer p { margin: 2px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+        .question { font-size: 14px; line-height: 1.45; font-weight: 550; }
+        .answer { margin-top: 8px; }
+        .answer-label { color: #a9dfc8; }
+        .partial { color: #d1d9dc; }
+        .hint, .notice, .pending { color: #b5bdc1; font-size: 12px; margin: 4px 0; }
+        .hint { padding: 16px 0; }
+        .notice { color: #e7c5ac; }
+        .code-block { margin: 7px 0; background: #0c1217; border: 1px solid #ffffff24; border-radius: 6px; }
+        .code-block small { display: block; padding: 4px 8px; color: #a6b6bb; border-bottom: 1px solid #ffffff18; }
+        pre { margin: 0; padding: 9px; overflow-x: auto; }
+        code { font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre; tab-size: 4; }
+        button { color: #b6e4d4; font: inherit; font-size: 12px; background: transparent; border: none; padding: 2px 0; cursor: pointer; text-decoration: underline; }
+        button:focus-visible { outline: 2px solid #a4cdbf; }
     `;
 
     constructor() {
         super();
-        this.callerActive = false;
-        this.micActive = false;
-        this.includeReplies = false;
-        this.replyMicActive = false;
-        this.replyText = '';
-        this.busy = '';
-        this.shortcuts = {};
-        this.callerText = '';
-        this.micText = '';
-        this.error = '';
         this.turns = [];
-        this.selectedId = null;
-        this.showHistory = false;
-        this.pendingAction = false;
-        this.turnRevision = 0;
+        this.speech = [];
+        this.partials = {};
+        this.phase = 'paused';
+        this.callerActive = this.micActive = false;
+        this.sourceErrors = {};
+        this.error = '';
         this.generation = 0;
-        this.micFinal = '';
-        this.micPartial = '';
+        this.resetCount = 0;
+        this.followLatest = true;
+        this.formattedAnswers = new WeakMap();
     }
 
     connectedCallback() {
         super.connectedCallback();
         const api = window.api.askView;
-        api.onInterviewTurn(this.onInterviewTurn);
-        api.onInterviewReset(this.onInterviewReset);
-        const revision = this.turnRevision;
-        api.getInterviewTurns().then(turns => {
-            if (this.isConnected && revision === this.turnRevision) this.turns = turns;
-        }).catch(console.error);
-        api.onAudioShortcut(this.onShortcut);
-        api.onAudioPaused(this.onPause);
+        api.onInterviewTurn(this.onTurn);
+        api.onInterviewSpeech(this.onSpeech);
+        api.onInterviewReset(this.onReset);
         api.onTranscript(this.onTranscript);
+        api.onAudioShortcut(this.toggleListening);
+        api.onAudioPaused(this.onAudioPaused);
         api.onCallerAudioStopped(this.onCallerStopped);
-        api.onShortcutsUpdated(this.onShortcutsUpdated);
-        api.getShortcuts().then(shortcuts => { this.shortcuts = shortcuts; }).catch(console.error);
+        const reset = this.resetCount;
+        Promise.all([api.getInterviewTurns(), api.getInterviewSpeech()]).then(([turns, speech]) => {
+            if (!this.isConnected || reset !== this.resetCount) return;
+            this.turns = mergeById(turns, this.turns);
+            this.speech = mergeById(speech, this.speech);
+        }).catch(() => { this.error = 'Could not load the earlier conversation.'; });
     }
 
     disconnectedCallback() {
         super.disconnectedCallback();
         const api = window.api.askView;
-        api.removeOnInterviewTurn(this.onInterviewTurn);
-        api.removeOnInterviewReset(this.onInterviewReset);
-        api.removeOnAudioShortcut(this.onShortcut);
-        api.removeOnAudioPaused(this.onPause);
+        api.removeOnInterviewTurn(this.onTurn);
+        api.removeOnInterviewSpeech(this.onSpeech);
+        api.removeOnInterviewReset(this.onReset);
         api.removeOnTranscript(this.onTranscript);
+        api.removeOnAudioShortcut(this.toggleListening);
+        api.removeOnAudioPaused(this.onAudioPaused);
         api.removeOnCallerAudioStopped(this.onCallerStopped);
-        api.removeOnShortcutsUpdated(this.onShortcutsUpdated);
-        this.onPause();
+        this.pauseListening();
     }
 
-    onInterviewReset = () => {
-        this.turnRevision++;
+    onReset = () => {
+        this.resetCount++;
         this.turns = [];
-        this.selectedId = null;
-        this.showHistory = false;
-        this.callerText = '';
+        this.speech = [];
+        this.partials = {};
+        this.followLatest = true;
     };
 
-    onInterviewTurn = (_event, turn) => {
-        this.turnRevision++;
-        const turns = this.turns[0]?.id < turn.oldestId
-            ? this.turns.filter(item => item.id >= turn.oldestId) : this.turns;
-        if (this.selectedId !== null && this.selectedId < turn.oldestId) this.selectedId = null;
-        this.turns = turns.some(item => item.id === turn.id)
-            ? turns.map(item => item.id === turn.id ? turn : item)
-            : [...turns, turn];
+    onTurn = (_, turn) => {
+        this.turns = mergeById(this.turns, [turn]);
     };
 
-    get latestAnswer() {
-        // Keep a readable answer on screen until the next one has text.
-        return this.turns.findLast(turn => turn.answer || turn.status === 'error')
-            ?? this.turns.find(turn => turn.status === 'answering' || turn.status === 'queued')
-            ?? this.turns.at(-1);
-    }
+    onSpeech = (_, segment) => {
+        this.speech = mergeById(this.speech, [segment]);
+    };
 
-    async requestTurn(turn, kind) {
-        if (this.pendingAction) return;
-        this.pendingAction = true;
+    onTranscript = (_, { speaker, text, isFinal, timestamp }) => {
+        if (this.phase === 'paused' || !['Me', 'Them'].includes(speaker)) return;
+        const source = speaker === 'Me' ? 'mic' : 'caller';
+        const partials = { ...this.partials };
+        if (isFinal || !text) delete partials[source];
+        else partials[source] = { source, text, timestamp: partials[source]?.timestamp ?? timestamp ?? Date.now() };
+        this.partials = partials;
+    };
+
+    get listening() { return this.phase === 'active' || this.phase === 'starting'; }
+
+    toggleListening = () => this.listening ? this.pauseListening() : this.startListening();
+
+    startListening() {
+        if (!this.enabled || this.phase !== 'paused') return this.starting;
+        const generation = ++this.generation;
+        this.phase = 'starting';
         this.error = '';
-        try {
-            const api = window.api.askView;
-            const result = kind ? await api.requestInterviewFollowup(turn.id, kind) : await api.answerInterviewTurn(turn.id);
-            if (!result.success) throw new Error(result.error || 'Could not request an answer.');
-            this.selectedId = result.id;
-            this.showHistory = false;
-        } catch (error) {
-            this.error = error.message;
-        } finally {
-            this.pendingAction = false;
-        }
-    }
-
-    onShortcutsUpdated = (_event, shortcuts) => { this.shortcuts = shortcuts; };
-    onShortcut = (_event, source) => { this.toggleAudio(source); };
-
-    onPause = () => {
-        this.generation++;
-        stopMicrophone();
-        this.callerActive = false;
-        this.micActive = false;
-        this.replyMicActive = false;
-        this.replyText = '';
-        this.insertVoiceQuestion();
-        window.api.askView.endAudio().catch(console.error);
-    };
-
-    onCallerStopped = () => {
-        this.callerActive = false;
-        this.callerCaptureEnded = true;
-        this.stopReplyMicrophone(false).catch(console.error);
-        this.error = 'Caller audio stopped. Check Glass’s Screen & System Audio Recording permission.';
-        if (!this.micActive && this.busy !== 'mic') window.api.askView.endAudio().catch(console.error);
-    };
-
-    onTranscript = (_event, { speaker, text, isFinal }) => {
-        if (speaker === 'Them' && (this.callerActive || this.busy === 'caller')) this.callerText = text;
-        if (speaker === 'Me' && this.replyMicActive) this.replyText = text;
-        if (speaker !== 'Me' || !this.micActive) return;
-
-        if (isFinal) {
-            this.micFinal = [this.micFinal, text].filter(Boolean).join(' ');
-            this.micPartial = '';
-        } else {
-            this.micPartial = text;
-        }
-        this.micText = [this.micFinal, this.micPartial].filter(Boolean).join(' ');
-    };
-
-    insertVoiceQuestion() {
-        const text = this.micText.trim();
-        this.micFinal = this.micPartial = this.micText = '';
-        if (text) this.dispatchEvent(new CustomEvent('voice-question', { detail: text }));
-        return !!text;
-    }
-
-    async startReplyMicrophone() {
-        if (!this.callerActive || !this.includeReplies || this.micActive) return;
-        const api = window.api.askView;
-        this.replyMicActive = true;
-        this.replyText = '';
-        try {
-            await api.beginAudio('mic');
-            if (!this.replyMicActive) return;
-            const result = await api.setInterviewRepliesEnabled(true);
-            if (!result?.success) throw new Error('Start an interview to include your replies.');
-            if (this.replyMicActive) await startMicrophone();
-        } catch (error) {
-            await this.stopReplyMicrophone(false);
-            this.includeReplies = false;
-            throw error;
-        }
-    }
-
-    async stopReplyMicrophone(flush) {
-        if (!this.replyMicActive) return;
-        const api = window.api.askView;
-        this.replyMicActive = false;
-        this.replyText = '';
-        try {
-            await stopMicrophone({ flush });
-            if (flush) await api.finishMicrophone();
-        } finally {
-            await api.setInterviewRepliesEnabled(false);
-        }
-    }
-
-    async changeIncludeReplies(event) {
-        this.includeReplies = event.target.checked;
-        if (!this.callerActive || this.micActive) return;
-        this.busy = 'reply-mic';
-        this.error = '';
-        try {
-            if (this.includeReplies) await this.startReplyMicrophone();
-            else await this.stopReplyMicrophone(true);
-        } catch (error) {
-            this.error = error.message.replace(/^Error invoking remote method '[^']+': (?:Error: )?/, '');
-        } finally {
-            this.busy = '';
-        }
-    }
-
-    async toggleAudio(source) {
-        if (this.busy || !['caller', 'mic'].includes(source)) return;
-
-        const api = window.api.askView;
-        const capture = window.api.listenCapture;
-        const generation = this.generation;
-        const isCaller = source === 'caller';
-        const activeProperty = isCaller ? 'callerActive' : 'micActive';
-        this.busy = !isCaller && this.micActive ? 'mic-stopping' : source;
-        this.error = '';
-        try {
-            if (this[activeProperty]) {
-                if (isCaller) {
-                    const results = await Promise.allSettled([
-                        capture.stopMacosSystemAudio(),
-                        this.stopReplyMicrophone(false),
-                    ]);
-                    if (results[0].status === 'rejected') throw results[0].reason;
-                    if (!results[0].value.success) throw new Error(results[0].value.error);
-                    this.callerActive = false;
-                    if (results[1].status === 'rejected') throw results[1].reason;
-                } else {
-                    try {
-                        await stopMicrophone({ flush: true });
-                        if (generation === this.generation) await api.finishMicrophone();
-                    } finally {
-                        if (generation === this.generation && !this.insertVoiceQuestion()) {
-                            this.error = 'No speech was transcribed. Check your input in System Settings → Sound.';
-                        }
-                        this.micActive = false;
-                        if (generation === this.generation) await this.startReplyMicrophone();
-                    }
-                }
-                this[activeProperty] = false;
+        this.sourceErrors = {};
+        this.callerStopped = false;
+        this.starting = Promise.all(['caller', 'mic'].map(source => this.startSource(source, generation))).then(async () => {
+            if (this.generation !== generation) return;
+            if (this.callerActive || this.micActive) {
+                this.phase = 'active';
             } else {
-                // Drain the reply turn before routing new microphone words into a draft.
-                if (!isCaller) await this.stopReplyMicrophone(true);
-                if (generation !== this.generation) return;
-                await api.beginAudio(source);
-                if (generation !== this.generation) return;
-
-                if (isCaller) {
-                    this.callerCaptureEnded = false;
-                    this.callerText = '';
-                    const result = await capture.startMacosSystemAudio();
-                    if (!result.success || this.callerCaptureEnded) {
-                        throw new Error(result.error || 'Caller audio stopped. Check Glass’s audio recording permission.');
-                    }
-                    if (generation !== this.generation) return;
-                } else if (!await startMicrophone() || generation !== this.generation) {
-                    return;
+                if (Object.values(this.sourceErrors).some(problem => problem.connection)) {
+                    this.sourceErrors = Object.fromEntries(Object.entries(this.sourceErrors).filter(([, problem]) => !problem.connection));
+                    this.error = 'Could not connect to transcription. Check the speech provider in Glass Settings or your network, then select Resume.';
                 }
-                this[activeProperty] = true;
-                if (isCaller) await this.startReplyMicrophone();
+                await this.pauseListening();
+            }
+        });
+        return this.starting;
+    }
+
+    async startSource(source, generation) {
+        let connected = false;
+        try {
+            await window.api.askView.beginAudio(source);
+            connected = true;
+            if (generation !== this.generation) return;
+            if (source === 'mic') {
+                const started = await startMicrophone({ onEnded: () => {
+                    if (generation === this.generation) this.onSourceStopped('mic');
+                } });
+                if (generation === this.generation) this.micActive = started;
+            } else {
+                const result = await window.api.listenCapture.startMacosSystemAudio();
+                if (!result?.success || this.callerStopped) throw new Error('System audio capture stopped.');
+                if (generation === this.generation) this.callerActive = true;
             }
         } catch (error) {
-            if (generation === this.generation) {
-                this.error = error.message.replace(/^Error invoking remote method '[^']+': (?:Error: )?/, '');
-            }
+            if (generation !== this.generation) return;
+            const permission = /privacy|permission|notallowed|not allowed|denied/i.test(`${error.name} ${error.message}`);
+            const message = source === 'caller' ? 'Caller audio unavailable.' : 'Microphone unavailable.';
+            this.sourceErrors = { ...this.sourceErrors, [source]: { message, permission, connection: !connected && !permission } };
+        }
+    }
+
+    onCallerStopped = () => this.onSourceStopped('caller');
+
+    onSourceStopped(source) {
+        if (!this.listening) return;
+        if (source === 'caller') {
+            this.callerStopped = true;
+            this.callerActive = false;
+        } else {
+            this.micActive = false;
+        }
+        const partials = { ...this.partials };
+        delete partials[source];
+        this.partials = partials;
+        const message = source === 'caller' ? 'Caller audio stopped.' : 'Microphone disconnected.';
+        this.sourceErrors = { ...this.sourceErrors, [source]: { message, permission: source === 'caller' } };
+        if (this.phase === 'active' && !this.micActive && !this.callerActive) this.pauseListening();
+    }
+
+    onAudioPaused = async (_, reason) => {
+        if (typeof reason === 'string' && reason) this.error = reason;
+        await this.pauseListening();
+    };
+
+    pauseListening() {
+        if (this.phase === 'stopping') return this.stopping;
+        if (!this.listening) return;
+        this.stopping = this.stopSources();
+        return this.stopping;
+    }
+
+    async stopSources() {
+        // Invalidate any pending getUserMedia or permission response before draining both sources.
+        ++this.generation;
+        this.phase = 'stopping';
+        const mic = this.micActive;
+        this.micActive = this.callerActive = false;
+        try {
+            const finishMic = Promise.resolve(stopMicrophone({ flush: mic })).then(() => mic && window.api.askView.finishMicrophone());
+            await Promise.allSettled([finishMic, window.api.listenCapture.stopMacosSystemAudio()]);
         } finally {
-            if (!this.callerActive && !this.micActive) await api.endAudio().catch(console.error);
-            this.busy = '';
+            try { await window.api.askView.endAudio(); }
+            catch { this.error = 'Could not close the transcription connection.'; }
+            this.partials = {};
+            this.phase = 'paused';
         }
     }
 
-    renderShortcut(action) {
-        const accelerator = this.shortcuts[action];
-        if (!accelerator) return '';
-        return html`<kbd title=${accelerator}>${accelerator.split('+').map(key => shortcutLabels[key] || key).join('')}</kbd>`;
+    get status() {
+        if (this.phase === 'starting') return 'Starting…';
+        if (this.phase === 'stopping') return 'Pausing…';
+        if (this.phase === 'paused') return 'Paused';
+        if (Object.keys(this.partials).length) return 'Transcribing…';
+        if (this.turns.some(turn => ['answering', 'queued'].includes(turn.status))) return 'Answering…';
+        if (!this.micActive) return 'Caller only';
+        if (!this.callerActive) return 'Mic only';
+        return 'Listening';
     }
 
-    updated(changes) {
-        if (changes.has('callerActive')) {
-            this.dispatchEvent(new CustomEvent('caller-audio-state', {
-                detail: this.callerActive, bubbles: true, composed: true,
-            }));
+    updated(changed) {
+        if (['phase', 'partials', 'callerActive', 'micActive', 'turns'].some(key => changed.has(key))) {
+            const state = { phase: this.phase, listening: this.listening, status: this.status, caller: this.callerActive, mic: this.micActive };
+            if (JSON.stringify(state) !== this.publishedState) {
+                this.publishedState = JSON.stringify(state);
+                this.dispatchEvent(new CustomEvent('capture-state', { detail: state, bubbles: true, composed: true }));
+            }
         }
+        this.scrollToLatest();
     }
 
-    renderHistory(selected) {
-        const labels = { suggested: 'Available', queued: 'Queued', answering: 'Answering', done: 'Answered', error: 'Retry' };
-        return html`<nav class="history" id="question-history" aria-label="Caller questions">
-            ${this.turns.slice().reverse().map(turn => html`
-                <button class=${turn.id === selected?.id ? 'selected' : ''} title=${turn.question}
-                    @click=${() => { this.selectedId = turn.id; this.showHistory = false; }}>
-                    <span class="title">${turn.question}</span><small>${labels[turn.status]}</small>
-                </button>`)}
-        </nav>`;
+    scrollToLatest() {
+        const log = this.shadowRoot.getElementById('conversation');
+        if (this.followLatest && log?.clientHeight) log.scrollTop = log.scrollHeight;
     }
 
-    renderAnswer(turn) {
-        if (!turn) return '';
-        return html`<section class="answer" aria-label="Interview answer">
-            <div class="answer-top">
-                <span>${this.selectedId === null ? 'Live answer' : 'Selected question'}</span>
-                ${this.selectedId !== null ? html`<button @click=${() => { this.selectedId = null; }}>Follow latest</button>` : ''}
+    onScroll(event) {
+        const log = event.currentTarget;
+        if (log.clientHeight) this.followLatest = log.scrollHeight - log.clientHeight - log.scrollTop < 22;
+    }
+
+    scroll(direction) {
+        const log = this.shadowRoot.getElementById('conversation');
+        log.scrollBy({ top: (direction === 'up' ? -1 : 1) * Math.max(60, log.clientHeight * 0.75), behavior: 'smooth' });
+    }
+
+    async retry(turn) {
+        try {
+            const result = await window.api.askView.answerInterviewTurn(turn.id);
+            if (!result?.success) throw new Error();
+        } catch { this.error = 'Could not retry this answer.'; }
+    }
+
+    renderTurn(turn) {
+        if (turn.answer && !this.formattedAnswers.has(turn)) this.formattedAnswers.set(turn, renderAnswer(turn.answer));
+        return html`<article data-turn-id=${turn.id} data-source=${turn.source}>
+            <span class="speaker">${sourceNames[turn.source] || 'Caller'}</span>
+            <p class="question">${turn.question}</p>
+            <div class="answer"><span class="answer-label">Glass</span>
+                ${this.formattedAnswers.get(turn) || ''}
+                ${!turn.answer && ['queued', 'answering'].includes(turn.status) ? html`<p class="pending">${turn.status === 'queued' ? 'Queued…' : 'Answering…'}</p>` : ''}
+                ${turn.status === 'error' ? html`<p class="notice">${turn.error || 'Could not finish the answer.'}</p>` : ''}
+                ${['error', 'suggested'].includes(turn.status) ? html`<button @click=${() => this.retry(turn)}>${turn.status === 'error' ? 'Retry' : 'Answer'}</button>` : ''}
             </div>
-            <div class="answer-content">
-                <h3>${turn.question}</h3>
-                ${turn.answer ? html`<p>${turn.answer}</p>` : ''}
-            </div>
-            ${turn.status === 'queued' || turn.status === 'answering' && !turn.answer
-                ? html`<div class="status" role="status">${turn.status === 'queued' ? 'Queued…' : 'Answering…'}</div>` : ''}
-            ${turn.status === 'error' ? html`<p class="error" role="alert">${turn.error || 'Could not finish this answer.'}</p>` : ''}
-            ${turn.status === 'suggested' || turn.status === 'error' ? html`
-                <div class="followups"><button ?disabled=${this.pendingAction} @click=${() => this.requestTurn(turn)}>
-                    ${turn.status === 'error' ? 'Try again' : 'Answer this'}</button></div>` : ''}
-            ${turn.status === 'done' ? html`<div class="followups" aria-label="Follow-up suggestions">
-                <button ?disabled=${this.pendingAction} @click=${() => this.requestTurn(turn, 'example')}>Give an example</button>
-                <button ?disabled=${this.pendingAction} @click=${() => this.requestTurn(turn, 'detail')}>Go deeper</button>
-            </div>` : ''}
-        </section>`;
+        </article>`;
     }
 
     render() {
-        const selected = this.turns.find(turn => turn.id === this.selectedId) ?? this.latestAnswer;
-        const status = {
-            caller: this.callerActive ? 'Finishing caller captions…' : 'Connecting caller audio…',
-            mic: 'Starting microphone…',
-            'mic-stopping': 'Finishing dictation…',
-            'reply-mic': this.includeReplies ? 'Starting reply microphone…' : 'Finishing your reply…',
-        }[this.busy];
-        return html`
-            <div class="controls" aria-label="Interview controls">
-                <button type="button" class="interview" aria-pressed=${String(this.callerActive)} ?disabled=${!!this.busy}
-                    title="Listen to the caller and answer questions automatically" @click=${() => this.toggleAudio('caller')}>
-                    ${this.callerActive ? 'Stop interview' : 'Start interview'} ${this.renderShortcut('toggleCallerAudio')}
-                </button>
-                <button type="button" aria-pressed=${String(this.micActive)} ?disabled=${!!this.busy}
-                    title="Dictate your own question" @click=${() => this.toggleAudio('mic')}>
-                    ${this.micActive ? 'Stop speaking' : 'Speak'} ${this.renderShortcut('toggleMicrophone')}
-                </button>
-                <button type="button" ?disabled=${!this.turns.length} aria-expanded=${String(this.showHistory)}
-                    aria-controls="question-history" @click=${() => { this.showHistory = !this.showHistory; }}>
-                    Questions ${this.turns.length ? html`<kbd>${this.turns.length}</kbd>` : ''}
-                </button>
-                <button type="button" @click=${() => window.api.mainHeader.sendAskButtonClick()}>
-                    Hide Ask <kbd>⌃↵</kbd>
-                </button>
-            </div>
-            <label class="reply-option" title="Use your microphone to add your spoken replies to the interview context">
-                <input type="checkbox" .checked=${this.includeReplies} ?disabled=${!!this.busy} @change=${this.changeIncludeReplies} />
-                Include my replies
-                ${this.replyMicActive ? html`<small>Mic on</small>` : ''}
-            </label>
-            ${this.showHistory ? this.renderHistory(selected) : ''}
-            ${status ? html`<p class="status" role="status">${status}</p>` : ''}
-            ${!this.turns.length && !this.callerText && !status && !this.error && !this.micActive ? html`
-                <p class="live-hint">${this.callerActive ? 'Listening for the caller’s question…' : 'Start interview for live caller captions and answers.'}</p>` : ''}
-            ${this.callerText ? html`<p class="caption"><strong>Caller</strong> ${this.callerText}</p>` : ''}
-            ${this.replyMicActive && this.replyText ? html`<p class="caption"><strong>Your reply</strong> ${this.replyText}</p>` : ''}
-            ${this.micText ? html`<p class="caption"><strong>Your draft</strong> ${this.micText}</p>` : ''}
-            ${this.error ? html`<p class="error" role="alert">${this.error}</p>
-                ${/Screen & System Audio Recording|Privacy.*Microphone/i.test(this.error) ? html`
-                    <button type="button" @click=${() => window.api.common.openExternal(
-                        this.error.includes('Screen & System Audio Recording')
-                            ? 'x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture'
-                            : 'x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone'
-                    )}>Open Privacy Settings</button>` : ''}` : ''}
-            ${this.renderAnswer(selected)}
-        `;
+        const answered = new Set(this.turns.flatMap(turn => turn.speechIds || []));
+        const rows = [
+            ...this.speech.filter(s => !answered.has(s.id)).map(s => ({ timestamp: s.timestamp, row: html`<article data-speech-id=${s.id} data-source=${s.source}>
+                <span class="speaker">${sourceNames[s.source]}</span><p class="transcript">${s.text}</p></article>` })),
+            ...this.turns.map(turn => ({ timestamp: turn.timestamp, row: this.renderTurn(turn) })),
+            ...Object.values(this.partials).map(s => ({ timestamp: s.timestamp, row: html`<article class="partial" data-partial-source=${s.source}>
+                <span class="speaker">${sourceNames[s.source]}</span><p class="transcript">${s.text}</p></article>` })),
+        ];
+        rows.sort((a, b) => a.timestamp - b.timestamp);
+        return html`<div id="conversation" tabindex="0" role="region" aria-label="Conversation" @scroll=${this.onScroll}>
+            ${rows.map(item => item.row)}
+            ${!rows.length ? html`<p class="hint">${this.phase === 'active' ? 'Waiting for speech…' : this.phase === 'starting' ? 'Connecting audio…' : 'Type a question or resume listening.'}</p>` : ''}
+            ${Object.entries(this.sourceErrors).map(([source, problem]) => html`<p class="notice">${problem.message}
+                ${problem.permission ? html`<button @click=${() => window.api.common.openExternal(privacySettings[source])}>Open ${source === 'caller' ? 'screen recording' : 'microphone'} settings</button>` : ''}</p>`)}
+            ${this.error ? html`<p class="notice" role="alert">${this.error}</p>` : ''}
+        </div>`;
     }
 }
 

@@ -15,12 +15,17 @@ class HeaderTransitionManager {
         this.overlay = document.getElementById('glass-overlay');
         this.askPanel = document.getElementById('ask-panel');
         this.headerSize = { width: 353, height: 47 };
+        this.conversationEpoch = 0;
+        this.stateRevision = 0;
 
         if (window.api) {
-            this.askPanel.addEventListener('caller-audio-state', event => {
-                if (this.mainHeader) this.mainHeader.callerListening = event.detail;
+            this.askPanel.addEventListener('capture-state', event => {
+                this.capture = event.detail;
+                if (this.mainHeader) this.mainHeader.capture = this.capture;
             });
             window.api.askView.onAskStateUpdate((_, { isVisible }) => {
+                if (isVisible && window.api.platform.isMacOS && !this.conversationOpened) return;
+                if (this.mainHeader) this.mainHeader.panelOpen = isVisible;
                 if (isVisible === !this.askPanel.hidden) return;
                 this.askPanel.hidden = !isVisible;
                 this.overlay.classList.toggle('expanded', isVisible);
@@ -44,6 +49,7 @@ class HeaderTransitionManager {
                 return;
             }
 
+            if (type !== 'main' && this.conversationOpened) this.deactivateConversation(false);
             this.headerContainer.innerHTML = '';
             
             this.welcomeHeader = null;
@@ -82,10 +88,13 @@ class HeaderTransitionManager {
                 this.headerContainer.appendChild(this.permissionHeader);
             } else {
                 this.mainHeader = document.createElement('main-header');
+                if (this.capture) this.mainHeader.capture = this.capture;
+                this.mainHeader.panelOpen = !this.askPanel.hidden;
                 this.headerContainer.appendChild(this.mainHeader);
                 this.mainHeader.startSlideInAnimation?.();
             }
 
+            this.overlay.classList.toggle('conversation', type === 'main' && !!window.api?.platform.isMacOS);
             this.currentHeaderType = type;
             this.notifyHeaderState(type === 'permission' ? 'apikey' : type); // Keep permission state as apikey for compatibility
         };
@@ -148,11 +157,18 @@ class HeaderTransitionManager {
 
     //////// after_modelStateService ////////
     async handleStateUpdate(userState) {
+        const revision = ++this.stateRevision;
+        if (window.api.platform.isMacOS && userState?.uid) {
+            const accountChanged = this.userId && this.userId !== userState.uid;
+            this.userId = userState.uid;
+            if (accountChanged) await this.deactivateConversation(true);
+        }
         const isConfigured = await window.api.apiKeyHeader.areProvidersConfigured();
-
+        if (revision !== this.stateRevision) return;
         if (isConfigured) {
             // If providers are configured, always check permissions regardless of login state.
             const permissionResult = await this.checkPermissions();
+            if (revision !== this.stateRevision) return;
             if (permissionResult.success) {
                 this.transitionToMainHeader();
             } else {
@@ -204,13 +220,34 @@ class HeaderTransitionManager {
         this.ensureHeader('permission');
     }
 
-    async transitionToMainHeader(animate = true) {
-        if (this.currentHeaderType === 'main') {
-            return this._resizeForMain();
-        }
+    deactivateConversation(accountChanged) {
+        ++this.conversationEpoch;
+        this.conversationOpened = false;
+        this.askPanel.hidden = true;
+        this.overlay.classList.remove('expanded');
+        if (this.mainHeader) this.mainHeader.panelOpen = false;
+        this.applyWindowSize();
+        const prior = this.conversationCleanup;
+        const paused = this.askPanel.firstElementChild.setConversationEnabled(false);
+        this.conversationCleanup = Promise.all([prior, paused]).then(() => accountChanged
+            ? window.api.askView.resetConversation() : window.api.askView.closeAskWindow());
+        return this.conversationCleanup;
+    }
 
+    async transitionToMainHeader() {
+        const epoch = this.conversationEpoch;
         await this._resizeForMain();
+        if (epoch !== this.conversationEpoch) return;
         this.ensureHeader('main');
+        if (!window.api?.platform.isMacOS || this.conversationOpened) return;
+        await this.conversationCleanup;
+        if (epoch !== this.conversationEpoch || this.currentHeaderType !== 'main' || this.conversationOpened) return;
+        this.conversationOpened = true;
+        const view = this.askPanel.firstElementChild;
+        await view.setConversationEnabled(true);
+        if (epoch !== this.conversationEpoch) return;
+        await window.api.askView.openPanel();
+        if (epoch === this.conversationEpoch) await view.startListening();
     }
 
     async _resizeForMain() {
@@ -244,8 +281,9 @@ class HeaderTransitionManager {
 
     applyWindowSize() {
         const { width, height } = this.headerSize;
-        // A long interview answer and a manual Ask response can be open together.
-        this.askPanel.style.maxHeight = `${Math.max(180, window.screen.availHeight - height)}px`;
+        const available = Math.max(130, window.screen.availHeight - height);
+        this.askPanel.style.maxHeight = `${available}px`;
+        this.askPanel.style.setProperty('--ask-available-height', `${available}px`);
         const totalHeight = height + (this.askPanel.hidden ? 0 : this.askPanel.offsetHeight);
         if (this.lastSize?.width === width && this.lastSize?.height === totalHeight) return;
         this.lastSize = { width, height: totalHeight };
