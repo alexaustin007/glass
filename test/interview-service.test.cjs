@@ -14,9 +14,10 @@ function stream(text) {
     } }) };
 }
 
-async function fixture(t, responder = ({ question }) => stream('Answer to ' + question + ' Ó')) {
+async function fixture(t, responder = ({ question }) => stream('Answer to ' + question + ' Ó'),
+    profile = 'At Northstar I delivered the verified warehouse scheduling project.') {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'glass-interview-'));
-    await fs.writeFile(path.join(dir, 'interview-context.md'), 'At Northstar I delivered the verified warehouse scheduling project.');
+    await fs.writeFile(path.join(dir, 'interview-context.md'), profile);
     t.after(() => fs.rm(dir, { recursive: true, force: true }));
     const calls = [];
     const events = [];
@@ -132,7 +133,7 @@ test('typed questions work before starting and while paused, scoped profile and 
     service.ask('At Northstar specifically, who used the warehouse scheduling app?');
     await until(() => latest(service).status === 'done');
     assert.equal(latest(service).source, 'typed');
-    assert.match(calls[0].instructions, /verified warehouse scheduling project/);
+    assert.match(calls[0].candidateBackground, /verified warehouse scheduling project/);
     service.resume();
     service.transcript('Them', 'For this exercise, invoices arrive twice with the same identifier.');
     service.transcript('Them', 'Write a Python function that counts incoming identifiers once.');
@@ -140,7 +141,7 @@ test('typed questions work before starting and while paused, scoped profile and 
     await until(() => latest(service).status === 'done');
     assert.equal(latest(service).parentId, undefined);
     assert.doesNotMatch(contextText(calls[1]), /Northstar|Fixture response/);
-    assert.doesNotMatch(calls[1].instructions, /verified warehouse scheduling project/);
+    assert.equal(calls[1].candidateBackground, undefined);
     assert.match(calls[1].instructions, /Markdown code fence with the language tag/);
     assert.match(calls[1].instructions, /time and space complexity/);
     assert.ok(calls[1].options.maxTokens >= 1600);
@@ -155,6 +156,52 @@ test('typed questions work before starting and while paused, scoped profile and 
     assert.equal(service.turns.size, 4);
     assert.equal(events.filter(event => event.name === 'ask:interviewReset').length, 0);
     assert.doesNotMatch(JSON.stringify(events), /verified warehouse scheduling project/);
+});
+
+test('standalone interview questions receive verified context and spoken-answer guidance; generic technical questions do not', async t => {
+    const profile = '## Current role — Northstar Group\nProfile topics: Northstar, Atlas Relay | Tern.ai\nUsed Snowflake. The one recorded quote is “easy to read.”\nSpeech terms: Snowflake, Spark';
+    const { service, calls } = await fixture(t, undefined, profile);
+    const personal = [
+        'Introduce yourself.', 'What motivates you?', 'Why should we hire you?',
+        'What got you into this work?', 'What makes you a good fit for the role?',
+        'What are you looking for next?', 'Tell me about an achievement you are proud of.',
+        'Describe a difficult production incident.', 'What part was actually yours?',
+        'Describe the Northstar project.', 'How did Atlas Relay change?', 'Who used Tern AI?',
+        'Tell me about something you’ve shipped.',
+    ];
+    for (const question of personal) {
+        service.reset();
+        service.ask(question);
+        await until(() => latest(service).status === 'done');
+        const request = calls.at(-1);
+        assert.equal(request.candidateBackground, profile, question);
+        assert.doesNotMatch(request.instructions, /easy to read/);
+        assert.match(request.instructions, /35–65 words/);
+    }
+    for (const question of ['What are common challenges with Snowflake?', 'Can you reverse an integer?',
+        'How do you write a left join?', 'Compare Spark with Snowflake.', 'What does Atlas mean?', 'Explain the ternary operator.']) {
+        service.reset();
+        service.ask(question);
+        await until(() => latest(service).status === 'done');
+        assert.equal(calls.at(-1).candidateBackground, undefined, question);
+    }
+});
+
+test('a project follow-up keeps its context while a general question about the same tool starts fresh', async t => {
+    const profile = '## Current role — Northstar Group\nWorked on scheduling reliability with Snowflake.';
+    const { service, calls } = await fixture(t, () => stream('Snowflake scheduling challenges centered on batch size.'), profile);
+    service.start();
+    finish(service, 'Them', 'Describe the Northstar project.');
+    await until(() => latest(service).status === 'done');
+    assert.equal(calls.at(-1).candidateBackground, profile);
+    finish(service, 'Them', 'What changed?');
+    await until(() => latest(service).status === 'done');
+    assert.equal(calls.at(-1).candidateBackground, profile);
+    service.ask('What are common scheduling challenges with Snowflake?');
+    await until(() => latest(service).status === 'done');
+    assert.equal(latest(service).parentId, undefined);
+    assert.deepEqual(calls.at(-1).recentConversation, []);
+    assert.equal(calls.at(-1).candidateBackground, undefined);
 });
 
 test('related questions wait for the exact prior answer, independent topics run concurrently', async t => {
