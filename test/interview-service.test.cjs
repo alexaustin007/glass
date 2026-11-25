@@ -332,3 +332,48 @@ test('caller questions survive loopback echoes when the microphone final arrives
     assert.equal(latest(service).source, 'caller');
     assert.equal(calls.length, 1);
 });
+
+test('overlapping mic fragments from speakers collapse while numeric, entity and negative corrections survive', async t => {
+    const { service } = await fixture(t);
+    let now = 10000;
+    t.mock.method(Date, 'now', () => now);
+    service.start();
+    const caller = 'For this practice example, the batch size is twelve records. What batch size did I just give you?';
+    service.interim(caller, 'Them');
+    service.transcript('Me', 'The batch size is twelve records.');
+    finish(service, 'Them', caller);
+    service.transcript('Me', 'At batch size did I just give you?');
+    assert.deepEqual(service.getSpeech().map(entry => entry.text), [caller]);
+    const corrections = ['The batch size is thirteen records.', 'The batch size is twelve bytes.', 'The batch size is not twelve records.', 'What batch size did I just give them?'];
+    for (const text of corrections) service.transcript('Me', text);
+    assert.deepEqual(service.getSpeech().filter(entry => entry.source === 'mic').map(entry => entry.text), corrections);
+    now += 5000;
+    service.transcript('Me', 'The batch size is twelve records.');
+    assert.equal(service.getSpeech().at(-1).text, 'The batch size is twelve records.');
+    service.pause();
+    service.resume('mic');
+    finish(service, 'Me', 'What batch size did I just give you?');
+    assert.equal(latest(service).source, 'mic');
+});
+
+test('typed topic follow-ups and first-person recall after pause retain the batch size stated by the caller', async t => {
+    const { service, calls } = await fixture(t);
+    service.start();
+    const caller = 'For this practice example, the batch size is twelve records. What batch size did I just give you?';
+    finish(service, 'Them', caller);
+    await until(() => latest(service)?.status === 'done');
+    const first = latest(service).id;
+    service.pause();
+    service.ask('How large was the batch size?');
+    await until(() => latest(service).status === 'done');
+    assert.equal(latest(service).parentId, first);
+    assert.ok(calls.at(-1).recentConversation.some(entry => entry.source === 'Caller' && entry.text === caller));
+    service.ask('Switching topics, why is the sky blue?');
+    await until(() => latest(service).status === 'done');
+    assert.equal(latest(service).parentId, undefined);
+    assert.deepEqual(calls.at(-1).recentConversation, []);
+    service.ask('What batch size did I just give?');
+    await until(() => latest(service).status === 'done');
+    assert.ok(calls.at(-1).recentConversation.some(entry => entry.source === 'Caller' && entry.text === caller));
+    assert.match(calls.at(-1).instructions, /report the relevant value from the actual conversation across both speakers/);
+});
